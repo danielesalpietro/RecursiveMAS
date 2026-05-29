@@ -16,8 +16,10 @@ import gc
 import io
 import json
 import os
+import queue as _queue
 import sys
 import tempfile
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -297,6 +299,13 @@ def respond(
     if not message.strip():
         return history, history, ""
 
+    if _BATCH_LOCK.locked():
+        warning = [
+            {"role": "user", "content": message},
+            {"role": "assistant", "content": "⚠️ A batch evaluation is running. Please wait for it to finish before sending chat messages."},
+        ]
+        return history + warning, history + warning, ""
+
     if _CURRENT_STYLE != style and _MODEL_CACHE:
         _evict_cache()
     _CURRENT_STYLE = style
@@ -334,11 +343,173 @@ def respond(
     return new_history, new_history, ""
 
 
+# ── Batch evaluation backend ──────────────────────────────────────────────────
+
+_BATCH_LOCK = threading.Lock()   # prevents concurrent batch runs
+_BATCH_DATASETS = ["math500", "medqa", "gpqa", "mbppplus"]
+
+
+class _QueueWriter:
+    """Redirect stdout from the inference thread into a Queue."""
+    def __init__(self, q: "_queue.Queue[Optional[str]]") -> None:
+        self._q = q
+
+    def write(self, s: str) -> None:
+        if s:
+            self._q.put(s)
+
+    def flush(self) -> None:
+        pass
+
+
+def _batch_worker(
+    style: str,
+    dataset: str,
+    num_samples: int,
+    device: str,
+    rounds: int,
+    latent_steps: int,
+    temperature: float,
+    top_p: float,
+    seed: int,
+    result_jsonl: str,
+    log_q: "_queue.Queue[Optional[str]]",
+) -> None:
+    """Runs the MAS pipeline over a full dataset in a background thread."""
+    import argparse as _ap
+
+    try:
+        paths = resolve_style_paths(style, dataset)
+        family = str(STYLE_SPECS[style]["family"])
+        max_new_tokens = infer_max_new_tokens(style, dataset)
+
+        fake_args = _ap.Namespace(
+            dataset=dataset,
+            dataset_split="",
+            num_recursive_rounds=rounds,
+            batch_size=8,
+            latent_length=latent_steps,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=-1,
+            trust_remote_code=1,
+            device=device,
+            seed=seed,
+            sample_seed=-1,
+        )
+
+        module, cli_args = build_cli_for_style(
+            args=fake_args,
+            family=family,
+            dataset_arg=dataset,
+            dataset_split="",
+            paths=paths,
+            latent_steps=latent_steps,
+            max_new_tokens=max_new_tokens,
+        )
+
+        cli_args += ["--result_jsonl", result_jsonl]
+        if num_samples > 0:
+            # build_common_cli already added --num_samples -1; argparse last-wins
+            cli_args += ["--num_samples", str(num_samples)]
+
+        old_argv = sys.argv[:]
+        sys.argv = [module.__file__ or "batch"] + cli_args
+        try:
+            with contextlib.redirect_stdout(_QueueWriter(log_q)):
+                module.main()
+            log_q.put(None)  # sentinel: success
+        except Exception as exc:
+            log_q.put(f"\n❌ Runtime error: {exc}\n")
+            log_q.put(None)
+        finally:
+            sys.argv = old_argv
+
+    except Exception as exc:
+        log_q.put(f"\n❌ Setup error: {exc}\n")
+        log_q.put(None)
+
+
+def run_batch_eval(
+    style: str,
+    dataset: str,
+    num_samples: int,
+    device: str,
+    rounds: int,
+    latent_steps: int,
+    temperature: float,
+    top_p: float,
+    seed: int,
+):
+    """Gradio generator: streams log lines and yields (log_text, file_component)."""
+    import re as _re
+
+    if not _BATCH_LOCK.acquire(blocking=False):
+        yield "⚠️ A batch run is already in progress. Wait for it to finish.\n", gr.update(visible=False)
+        return
+
+    result_jsonl = tempfile.mktemp(suffix=".jsonl", prefix="house_batch_")
+    log_q: "_queue.Queue[Optional[str]]" = _queue.Queue()
+
+    thread = threading.Thread(
+        target=_batch_worker,
+        args=(style, dataset, num_samples, device, rounds, latent_steps,
+              temperature, top_p, seed, result_jsonl, log_q),
+        daemon=True,
+    )
+    thread.start()
+
+    n_label = "all" if num_samples <= 0 else str(num_samples)
+    log = (
+        f"🚀 Batch evaluation started — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"   style={style} | dataset={dataset} | samples={n_label}\n"
+        f"   rounds={rounds} | latent_steps={latent_steps} | temperature={temperature}"
+        f" | top_p={top_p} | seed={seed} | version=v{_VERSION}\n"
+        f"{'='*70}\n"
+    )
+    yield log, gr.update(visible=False)
+
+    while True:
+        try:
+            item = log_q.get(timeout=1.0)
+        except _queue.Empty:
+            yield log, gr.update(visible=False)
+            continue
+        if item is None:
+            break
+        log += item
+        yield log, gr.update(visible=False)
+
+    thread.join()
+    _BATCH_LOCK.release()
+
+    acc_matches = _re.findall(r"accuracy=([0-9]+(?:\.[0-9]+)?)%", log)
+    summary = f"\n{'='*70}\n✅ Batch complete — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    if acc_matches:
+        summary += f" | accuracy: {acc_matches[-1]}%"
+    summary += "\n"
+    log += summary
+
+    if os.path.isfile(result_jsonl):
+        yield log, gr.update(value=result_jsonl, visible=True)
+    else:
+        yield log, gr.update(visible=False)
+
+
 # ── Gradio layout ─────────────────────────────────────────────────────────────
 
 
 def build_ui() -> gr.Blocks:
     device_opts = ["cuda", "cpu"] if torch.cuda.is_available() else ["cpu"]
+
+    _vram_note = (
+        "**Approx. VRAM**\n"
+        "- `sequential_light` ≈ 5 GB\n"
+        "- `sequential_scaled` ≈ 12 GB\n"
+        "- `mixture` ≈ 15 GB\n"
+        "- `distillation` ≈ 18 GB\n"
+        "- `deliberation` ≈ 12 GB"
+    )
 
     with gr.Blocks(title=f"HOUSE — RecursiveMAS v{_VERSION}") as demo:
         gr.Markdown(
@@ -348,79 +519,141 @@ def build_ui() -> gr.Blocks:
             "> Models load into VRAM on first request and stay warm for subsequent ones."
         )
 
-        with gr.Row():
-            # ── Settings panel ────────────────────────────────────────────
-            with gr.Column(scale=1, min_width=260):
-                gr.Markdown("### Settings")
-                style_dd = gr.Dropdown(
-                    choices=list(STYLE_SPECS.keys()),
-                    value="sequential_light",
-                    label="Collaboration style",
-                )
-                domain_dd = gr.Dropdown(
-                    choices=list(DOMAIN_SYSTEM_PROMPTS.keys()),
-                    value="general",
-                    label="Reasoning domain",
-                )
-                gr.Markdown(
-                    "> ℹ️ **First use:** model weights are downloaded from HuggingFace "
-                    "and cached locally. This may take several minutes depending on your connection. "
-                    "Subsequent runs and style switches load from cache instantly."
-                )
-                rounds_sl = gr.Slider(1, 5, value=3, step=1, label="Recursive rounds")
-                latent_sl = gr.Slider(8, 64, value=32, step=8, label="Latent steps")
-                device_dd = gr.Dropdown(choices=device_opts, value=device_opts[0], label="Device")
-                gr.Markdown(
-                    "**Approx. VRAM**\n"
-                    "- `sequential_light` ≈ 5 GB\n"
-                    "- `sequential_scaled` ≈ 12 GB\n"
-                    "- `mixture` ≈ 15 GB\n"
-                    "- `distillation` ≈ 18 GB\n"
-                    "- `deliberation` ≈ 12 GB"
-                )
-                with gr.Accordion("Advanced settings", open=False):
-                    temperature_sl = gr.Slider(
-                        0.0, 1.0, value=0.6, step=0.05,
-                        label="Temperature",
-                        info="Higher = more creative, lower = more deterministic",
-                    )
-                    top_p_sl = gr.Slider(
-                        0.0, 1.0, value=0.95, step=0.05,
-                        label="Top-p (nucleus sampling)",
-                        info="Cumulative probability threshold for token selection",
-                    )
-                    seed_num = gr.Number(
-                        value=42, precision=0,
-                        label="Seed",
-                        info="Fixed seed for reproducible outputs (integer)",
-                    )
+        with gr.Tabs():
 
-            # ── Chat panel ────────────────────────────────────────────────
-            with gr.Column(scale=3):
-                chatbot = gr.Chatbot(height=520, label="", show_label=False)
+            # ── Tab 1: Chat ───────────────────────────────────────────────
+            with gr.Tab("💬 Chat"):
                 with gr.Row():
-                    msg = gr.Textbox(
-                        placeholder="Ask a math, science, or reasoning question…",
-                        label="",
-                        lines=2,
-                        scale=5,
-                        show_label=False,
+                    with gr.Column(scale=1, min_width=260):
+                        gr.Markdown("### Settings")
+                        style_dd = gr.Dropdown(
+                            choices=list(STYLE_SPECS.keys()),
+                            value="sequential_light",
+                            label="Collaboration style",
+                        )
+                        domain_dd = gr.Dropdown(
+                            choices=list(DOMAIN_SYSTEM_PROMPTS.keys()),
+                            value="general",
+                            label="Reasoning domain",
+                        )
+                        gr.Markdown(
+                            "> ℹ️ **First use:** model weights are downloaded from HuggingFace "
+                            "and cached locally. This may take several minutes. "
+                            "Subsequent runs load from cache instantly."
+                        )
+                        rounds_sl = gr.Slider(1, 5, value=3, step=1, label="Recursive rounds")
+                        latent_sl = gr.Slider(8, 64, value=32, step=8, label="Latent steps")
+                        device_dd = gr.Dropdown(choices=device_opts, value=device_opts[0], label="Device")
+                        gr.Markdown(_vram_note)
+                        with gr.Accordion("Advanced settings", open=False):
+                            temperature_sl = gr.Slider(
+                                0.0, 1.0, value=0.6, step=0.05,
+                                label="Temperature",
+                                info="Higher = more creative, lower = more deterministic",
+                            )
+                            top_p_sl = gr.Slider(
+                                0.0, 1.0, value=0.95, step=0.05,
+                                label="Top-p (nucleus sampling)",
+                                info="Cumulative probability threshold for token selection",
+                            )
+                            seed_num = gr.Number(
+                                value=42, precision=0,
+                                label="Seed",
+                                info="Fixed seed for reproducible outputs (integer)",
+                            )
+
+                    with gr.Column(scale=3):
+                        chatbot = gr.Chatbot(height=520, label="", show_label=False)
+                        with gr.Row():
+                            msg = gr.Textbox(
+                                placeholder="Ask a math, science, or reasoning question…",
+                                label="", lines=2, scale=5, show_label=False,
+                            )
+                            send_btn = gr.Button("Send", variant="primary", scale=1)
+                        gr.Button("Clear").click(lambda: ([], []), outputs=[chatbot, gr.State([])])
+
+                state = gr.State([])
+                for trigger in (send_btn.click, msg.submit):
+                    trigger(
+                        respond,
+                        inputs=[
+                            msg, state, style_dd, domain_dd,
+                            rounds_sl, latent_sl, device_dd,
+                            temperature_sl, top_p_sl, seed_num,
+                        ],
+                        outputs=[chatbot, state, msg],
                     )
-                    send_btn = gr.Button("Send", variant="primary", scale=1)
-                gr.Button("Clear").click(lambda: ([], []), outputs=[chatbot, gr.State([])])
 
-        state = gr.State([])
+            # ── Tab 2: Batch Evaluation ───────────────────────────────────
+            with gr.Tab("📊 Batch Evaluation"):
+                gr.Markdown(
+                    "### Run a full benchmark evaluation\n"
+                    "The pipeline processes every question in the selected dataset and streams "
+                    "live progress below. Results are saved to a JSONL file available for download "
+                    "when the run completes."
+                )
+                with gr.Row():
+                    # ── Batch settings ────────────────────────────────────
+                    with gr.Column(scale=1, min_width=260):
+                        b_style_dd = gr.Dropdown(
+                            choices=list(STYLE_SPECS.keys()),
+                            value="sequential_light",
+                            label="Collaboration style",
+                        )
+                        b_dataset_dd = gr.Dropdown(
+                            choices=_BATCH_DATASETS,
+                            value="math500",
+                            label="Dataset",
+                        )
+                        b_samples_num = gr.Number(
+                            value=-1, precision=0,
+                            label="N samples (−1 = full benchmark)",
+                            info="Positive integer to evaluate a random subset",
+                        )
+                        b_device_dd = gr.Dropdown(choices=device_opts, value=device_opts[0], label="Device")
+                        b_rounds_sl = gr.Slider(1, 5, value=3, step=1, label="Recursive rounds")
+                        b_latent_sl = gr.Slider(8, 64, value=32, step=8, label="Latent steps")
+                        gr.Markdown(_vram_note)
+                        with gr.Accordion("Advanced settings", open=False):
+                            b_temp_sl = gr.Slider(
+                                0.0, 1.0, value=0.6, step=0.05,
+                                label="Temperature",
+                                info="Higher = more creative, lower = more deterministic",
+                            )
+                            b_topp_sl = gr.Slider(
+                                0.0, 1.0, value=0.95, step=0.05,
+                                label="Top-p (nucleus sampling)",
+                                info="Cumulative probability threshold for token selection",
+                            )
+                            b_seed_num = gr.Number(
+                                value=42, precision=0,
+                                label="Seed",
+                                info="Fixed seed for reproducible outputs",
+                            )
+                        run_btn = gr.Button("▶ Run Batch", variant="primary")
 
-        for trigger in (send_btn.click, msg.submit):
-            trigger(
-                respond,
-                inputs=[
-                    msg, state, style_dd, domain_dd,
-                    rounds_sl, latent_sl, device_dd,
-                    temperature_sl, top_p_sl, seed_num,
-                ],
-                outputs=[chatbot, state, msg],
-            )
+                    # ── Batch output ──────────────────────────────────────
+                    with gr.Column(scale=3):
+                        batch_log = gr.Code(
+                            label="Progress log",
+                            language=None,
+                            lines=30,
+                            interactive=False,
+                        )
+                        dl_file = gr.File(
+                            label="⬇ Download results (JSONL)",
+                            visible=False,
+                            interactive=False,
+                        )
+
+                run_btn.click(
+                    run_batch_eval,
+                    inputs=[
+                        b_style_dd, b_dataset_dd, b_samples_num, b_device_dd,
+                        b_rounds_sl, b_latent_sl, b_temp_sl, b_topp_sl, b_seed_num,
+                    ],
+                    outputs=[batch_log, dl_file],
+                )
 
     return demo
 
