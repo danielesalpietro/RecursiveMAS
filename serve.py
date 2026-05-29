@@ -18,6 +18,7 @@ import json
 import os
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -81,6 +82,7 @@ from run import (  # noqa: E402
 )
 import gradio as gr  # noqa: E402
 
+_VERSION = (THIS_DIR / "VERSION").read_text(encoding="utf-8").strip()
 
 # ── VRAM management ───────────────────────────────────────────────────────────
 
@@ -227,7 +229,12 @@ def _parse_agent_outputs(stdout: str) -> Dict[str, str]:
     return sections
 
 
-def _build_reply(style: str, parsed: str, stdout: str) -> str:
+def _build_reply(
+    style: str,
+    parsed: str,
+    stdout: str,
+    run_info: Optional[Dict] = None,
+) -> str:
     agents = _parse_agent_outputs(stdout)
     parts: List[str] = [f"**Style:** `{style}`"]
 
@@ -245,6 +252,22 @@ def _build_reply(style: str, parsed: str, stdout: str) -> str:
             parts.append(
                 f"\n<details><summary>{label} output</summary>\n\n{text}\n\n</details>"
             )
+
+    if run_info:
+        info = (
+            f"| Parameter | Value |\n"
+            f"|-----------|-------|\n"
+            f"| Version | `v{run_info['version']}` |\n"
+            f"| Style | `{run_info['style']}` |\n"
+            f"| Domain | `{run_info['domain']}` |\n"
+            f"| Recursive rounds | {run_info['rounds']} |\n"
+            f"| Latent steps | {run_info['latent_steps']} |\n"
+            f"| Device | `{run_info['device']}` |\n"
+            f"| Started | {run_info['started']} |\n"
+            f"| Finished | {run_info['finished']} |\n"
+            f"| Elapsed | {run_info['elapsed']} |"
+        )
+        parts.append(f"\n<details><summary>Run info</summary>\n\n{info}\n\n</details>")
 
     return "\n".join(parts) if len(parts) > 1 else (parsed or stdout[:3000])
 
@@ -270,8 +293,22 @@ def respond(
     _CURRENT_STYLE = style
 
     try:
+        t_start = datetime.now()
         stdout, parsed = _run_single_question(style, message, device, num_rounds, latent_steps, domain)
-        reply = _build_reply(style, parsed, stdout)
+        t_end = datetime.now()
+        elapsed = str(t_end - t_start).split(".")[0]  # HH:MM:SS
+        run_info = {
+            "version": _VERSION,
+            "style": style,
+            "domain": domain,
+            "rounds": num_rounds,
+            "latent_steps": latent_steps,
+            "device": device,
+            "started": t_start.strftime("%Y-%m-%d %H:%M:%S"),
+            "finished": t_end.strftime("%Y-%m-%d %H:%M:%S"),
+            "elapsed": elapsed,
+        }
+        reply = _build_reply(style, parsed, stdout, run_info)
     except Exception as exc:
         reply = f"❌ Error during inference:\n```\n{exc}\n```"
 
@@ -283,8 +320,6 @@ def respond(
 
 
 # ── Gradio layout ─────────────────────────────────────────────────────────────
-
-_VERSION = (THIS_DIR / "VERSION").read_text(encoding="utf-8").strip()
 
 
 def build_ui() -> gr.Blocks:
