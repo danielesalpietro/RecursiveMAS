@@ -106,6 +106,9 @@ def _run_single_question(
     num_rounds: int,
     latent_steps: int,
     domain: str = "general",
+    temperature: float = 0.6,
+    top_p: float = 0.95,
+    seed: int = 42,
 ) -> Tuple[str, str]:
     """
     Run the MAS pipeline on one question.
@@ -134,13 +137,13 @@ def _run_single_question(
             num_recursive_rounds=num_rounds,
             batch_size=1,
             latent_length=latent_steps,
-            temperature=0.6,
-            top_p=0.95,
+            temperature=temperature,
+            top_p=top_p,
             top_k=-1,
             trust_remote_code=1,
             device=device,
-            seed=42,
-            sample_seed=42,
+            seed=seed,
+            sample_seed=seed,
         )
 
         module, cli_args = build_cli_for_style(
@@ -262,6 +265,9 @@ def _build_reply(
             f"| Domain | `{run_info['domain']}` |\n"
             f"| Recursive rounds | {run_info['rounds']} |\n"
             f"| Latent steps | {run_info['latent_steps']} |\n"
+            f"| Temperature | {run_info['temperature']} |\n"
+            f"| Top-p | {run_info['top_p']} |\n"
+            f"| Seed | {run_info['seed']} |\n"
             f"| Device | `{run_info['device']}` |\n"
             f"| Started | {run_info['started']} |\n"
             f"| Finished | {run_info['finished']} |\n"
@@ -282,6 +288,9 @@ def respond(
     num_rounds: int,
     latent_steps: int,
     device: str,
+    temperature: float,
+    top_p: float,
+    seed: int,
 ) -> Tuple[List[Dict], List[Dict], str]:
     global _CURRENT_STYLE
 
@@ -294,7 +303,10 @@ def respond(
 
     try:
         t_start = datetime.now()
-        stdout, parsed = _run_single_question(style, message, device, num_rounds, latent_steps, domain)
+        stdout, parsed = _run_single_question(
+            style, message, device, num_rounds, latent_steps, domain,
+            temperature=temperature, top_p=top_p, seed=seed,
+        )
         t_end = datetime.now()
         elapsed = str(t_end - t_start).split(".")[0]  # HH:MM:SS
         run_info = {
@@ -304,6 +316,9 @@ def respond(
             "rounds": num_rounds,
             "latent_steps": latent_steps,
             "device": device,
+            "temperature": temperature,
+            "top_p": top_p,
+            "seed": seed,
             "started": t_start.strftime("%Y-%m-%d %H:%M:%S"),
             "finished": t_end.strftime("%Y-%m-%d %H:%M:%S"),
             "elapsed": elapsed,
@@ -363,6 +378,22 @@ def build_ui() -> gr.Blocks:
                     "- `distillation` ≈ 18 GB\n"
                     "- `deliberation` ≈ 12 GB"
                 )
+                with gr.Accordion("Advanced settings", open=False):
+                    temperature_sl = gr.Slider(
+                        0.0, 1.0, value=0.6, step=0.05,
+                        label="Temperature",
+                        info="Higher = more creative, lower = more deterministic",
+                    )
+                    top_p_sl = gr.Slider(
+                        0.0, 1.0, value=0.95, step=0.05,
+                        label="Top-p (nucleus sampling)",
+                        info="Cumulative probability threshold for token selection",
+                    )
+                    seed_num = gr.Number(
+                        value=42, precision=0,
+                        label="Seed",
+                        info="Fixed seed for reproducible outputs (integer)",
+                    )
 
             # ── Chat panel ────────────────────────────────────────────────
             with gr.Column(scale=3):
@@ -383,7 +414,11 @@ def build_ui() -> gr.Blocks:
         for trigger in (send_btn.click, msg.submit):
             trigger(
                 respond,
-                inputs=[msg, state, style_dd, domain_dd, rounds_sl, latent_sl, device_dd],
+                inputs=[
+                    msg, state, style_dd, domain_dd,
+                    rounds_sl, latent_sl, device_dd,
+                    temperature_sl, top_p_sl, seed_num,
+                ],
                 outputs=[chatbot, state, msg],
             )
 
