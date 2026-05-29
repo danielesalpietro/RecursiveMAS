@@ -561,7 +561,7 @@ def _get_cached_repos() -> Dict[str, int]:
         return {}
 
 
-def _build_model_catalog_data() -> List[List[str]]:
+def _build_model_catalog_data() -> List[List]:
     cached = _get_cached_repos()
     rows = []
     for style_name, role, repo_id in _all_model_repos():
@@ -577,22 +577,8 @@ def _build_model_catalog_data() -> List[List[str]]:
         else:
             size_str = "—"
             status = "☁️ not downloaded"
-        rows.append([style_name, role, repo_id, status, size_str])
+        rows.append([False, style_name, role, repo_id, status, size_str])
     return rows
-
-
-def _get_model_dropdown_choices(cached_only: bool) -> List[Tuple[str, Optional[str]]]:
-    """Return dropdown (label, value) pairs for cached or uncached models."""
-    cached = _get_cached_repos()
-    choices = [
-        (f"{style}/{role} — {repo_id}", repo_id)
-        for style, role, repo_id in _all_model_repos()
-        if (repo_id in cached) == cached_only
-    ]
-    if not choices:
-        label = "(all models are cached)" if not cached_only else "(no models cached locally)"
-        return [(label, None)]
-    return choices
 
 
 def _download_worker(repo_id: str, log_q: "_queue.Queue[Optional[str]]") -> None:
@@ -607,68 +593,73 @@ def _download_worker(repo_id: str, log_q: "_queue.Queue[Optional[str]]") -> None
         log_q.put(None)  # sentinel
 
 
-def start_model_download(repo_id: Optional[str]):
-    """Gradio generator: download one model and stream progress."""
-    if not repo_id:
-        yield "⚠️ Select a model to download.", gr.update(), gr.update(), gr.update()
+def _mm_run_action(action: Optional[str], df_data):
+    """Gradio generator: run Download or Delete on all checked rows, one at a time."""
+    if not action:
+        yield "⚠️ Choose an action from the dropdown.", gr.update()
         return
 
-    if not _DOWNLOAD_LOCK.acquire(blocking=False):
-        yield "⚠️ A download is already in progress. Please wait.", gr.update(), gr.update(), gr.update()
-        return
-
-    log_q: "_queue.Queue[Optional[str]]" = _queue.Queue()
-    thread = threading.Thread(target=_download_worker, args=(repo_id, log_q), daemon=True)
-    thread.start()
-
-    log = ""
+    # df_data may be a pandas DataFrame or list-of-lists depending on Gradio version
     try:
-        while True:
+        import pandas as _pd
+        rows = df_data.values.tolist() if isinstance(df_data, _pd.DataFrame) else (df_data or [])
+    except ImportError:
+        rows = df_data or []
+
+    # col layout: [bool, style, role, repo_id, status, size]
+    selected = [
+        r[3] for r in rows
+        if r and (r[0] is True or r[0] == "True" or r[0] == 1)
+    ]
+
+    if not selected:
+        yield "⚠️ No models selected — tick the checkboxes first.", gr.update()
+        return
+
+    is_download = "Download" in action
+    log = f"{'⬇ Downloading' if is_download else '🗑 Deleting'} {len(selected)} model(s)…\n\n"
+    yield log, gr.update()
+
+    if is_download:
+        if not _DOWNLOAD_LOCK.acquire(blocking=False):
+            yield log + "⚠️ Another download is already running.", gr.update()
+            return
+        try:
+            for repo_id in selected:
+                log_q: "_queue.Queue[Optional[str]]" = _queue.Queue()
+                t = threading.Thread(target=_download_worker, args=(repo_id, log_q), daemon=True)
+                t.start()
+                while True:
+                    try:
+                        item = log_q.get(timeout=2.0)
+                    except _queue.Empty:
+                        yield log, gr.update()
+                        continue
+                    if item is None:
+                        break
+                    log += item
+                    yield log, gr.update()
+                t.join()
+        finally:
+            _DOWNLOAD_LOCK.release()
+    else:
+        for repo_id in selected:
             try:
-                item = log_q.get(timeout=2.0)
-            except _queue.Empty:
-                yield log, gr.update(), gr.update(), gr.update()
-                continue
-            if item is None:
-                break
-            log += item
-            yield log, gr.update(), gr.update(), gr.update()
-    finally:
-        thread.join()
-        _DOWNLOAD_LOCK.release()
+                from huggingface_hub import scan_cache_dir
+                cache_info = scan_cache_dir()
+                target = next((r for r in cache_info.repos if r.repo_id == repo_id), None)
+                if target is None:
+                    log += f"⚠️ `{repo_id}` not found in cache.\n"
+                else:
+                    hashes = [rev.commit_hash for rev in target.revisions]
+                    cache_info.delete_revisions(*hashes).execute()
+                    log += f"🗑️ Deleted `{repo_id}`\n"
+            except Exception as exc:
+                log += f"❌ Failed `{repo_id}`: {exc}\n"
+            yield log, gr.update()
 
-    new_data = _build_model_catalog_data()
-    dl_ch = _get_model_dropdown_choices(cached_only=False)
-    del_ch = _get_model_dropdown_choices(cached_only=True)
-    yield (
-        log,
-        gr.update(value=new_data),
-        gr.update(choices=dl_ch, value=None),
-        gr.update(choices=del_ch, value=None),
-    )
-
-
-def delete_local_model(repo_id: Optional[str]):
-    """Delete a locally cached model; returns (status, catalog, dl_dd, del_dd)."""
-    if not repo_id:
-        return "⚠️ Select a model to delete.", gr.update(), gr.update(), gr.update()
-    try:
-        from huggingface_hub import scan_cache_dir
-        cache_info = scan_cache_dir()
-        target = next((r for r in cache_info.repos if r.repo_id == repo_id), None)
-        if target is None:
-            msg = f"⚠️ `{repo_id}` not found in local cache."
-        else:
-            hashes = [rev.commit_hash for rev in target.revisions]
-            cache_info.delete_revisions(*hashes).execute()
-            msg = f"🗑️ Deleted `{repo_id}` ({len(hashes)} revision(s) removed)."
-    except Exception as exc:
-        msg = f"❌ Delete failed: {exc}"
-
-    new_data = _build_model_catalog_data()
-    dl_ch = _get_model_dropdown_choices(cached_only=False)
-    del_ch = _get_model_dropdown_choices(cached_only=True)
-    return msg, gr.update(value=new_data), gr.update(choices=dl_ch, value=None), gr.update(choices=del_ch, value=None)
+    log += "\n✅ Done.\n"
+    yield log, gr.update(value=_build_model_catalog_data())
 
 
 # ── Gradio layout ─────────────────────────────────────────────────────────────
@@ -838,79 +829,56 @@ def build_ui() -> gr.Blocks:
             with gr.Tab("📦 Model Manager"):
                 gr.Markdown(
                     "### Model catalog\n"
-                    "All models the system can manage, with their local cache status. "
-                    "Use the controls below to download or delete individual models."
-                )
-
-                mm_refresh_btn = gr.Button("🔄 Refresh", variant="secondary", size="sm")
-
-                mm_catalog_df = gr.Dataframe(
-                    headers=["Style", "Role", "Repository", "Status", "Size"],
-                    value=_build_model_catalog_data(),
-                    interactive=False,
-                    wrap=True,
+                    "Tick one or more models, choose an action, then click **Run**. "
+                    "Multiple selections are processed one at a time."
                 )
 
                 with gr.Row():
-                    with gr.Column(scale=1):
-                        gr.Markdown("#### ⬇ Download model")
-                        gr.Markdown(
-                            "> One download at a time. Large models can take several minutes. "
-                            "Progress is streamed below."
-                        )
-                        mm_dl_dd = gr.Dropdown(
-                            choices=_get_model_dropdown_choices(cached_only=False),
-                            label="Model to download",
-                            info="Models not yet cached locally",
-                            value=None,
-                        )
-                        mm_dl_btn = gr.Button("⬇ Download", variant="primary")
-                        mm_dl_log = gr.Code(
-                            label="Download log", language=None, lines=6, interactive=False
-                        )
-
-                    with gr.Column(scale=1):
-                        gr.Markdown("#### 🗑 Delete model")
-                        gr.Markdown(
-                            "> Removes all local revisions for the selected model. "
-                            "Weights can be re-downloaded at any time."
-                        )
-                        mm_del_dd = gr.Dropdown(
-                            choices=_get_model_dropdown_choices(cached_only=True),
-                            label="Model to delete",
-                            info="Locally cached models",
-                            value=None,
-                        )
-                        mm_del_btn = gr.Button("🗑 Delete", variant="stop")
-                        mm_del_status = gr.Textbox(
-                            label="Status", interactive=False, lines=2
-                        )
-
-                def _mm_refresh():
-                    new_data = _build_model_catalog_data()
-                    dl_ch = _get_model_dropdown_choices(cached_only=False)
-                    del_ch = _get_model_dropdown_choices(cached_only=True)
-                    return (
-                        gr.update(value=new_data),
-                        gr.update(choices=dl_ch, value=None),
-                        gr.update(choices=del_ch, value=None),
+                    mm_refresh_btn  = gr.Button("🔄 Refresh",      size="sm", variant="secondary")
+                    mm_sel_all_btn  = gr.Button("☑ Select All",    size="sm")
+                    mm_desel_all_btn = gr.Button("☐ Deselect All", size="sm")
+                    mm_action_dd = gr.Dropdown(
+                        choices=["⬇ Download", "🗑 Delete"],
+                        value=None,
+                        label="Action",
+                        scale=2,
+                        min_width=150,
                     )
+                    mm_run_btn = gr.Button("▶ Run", variant="primary", scale=1)
 
+                mm_catalog_df = gr.Dataframe(
+                    headers=["", "Style", "Role", "Repository", "Status", "Size"],
+                    value=_build_model_catalog_data(),
+                    datatype=["bool", "str", "str", "str", "str", "str"],
+                    interactive=True,
+                    wrap=True,
+                    type="array",
+                )
+
+                mm_log = gr.Code(
+                    label="Progress", language=None, lines=6, interactive=False
+                )
+
+                def _mm_toggle_all(data, checked: bool):
+                    rows = data if data else _build_model_catalog_data()
+                    return [[checked] + r[1:] for r in rows]
+
+                mm_sel_all_btn.click(
+                    lambda d: _mm_toggle_all(d, True),
+                    inputs=[mm_catalog_df], outputs=[mm_catalog_df],
+                )
+                mm_desel_all_btn.click(
+                    lambda d: _mm_toggle_all(d, False),
+                    inputs=[mm_catalog_df], outputs=[mm_catalog_df],
+                )
                 mm_refresh_btn.click(
-                    _mm_refresh,
-                    outputs=[mm_catalog_df, mm_dl_dd, mm_del_dd],
+                    lambda: _build_model_catalog_data(),
+                    outputs=[mm_catalog_df],
                 )
-
-                mm_dl_btn.click(
-                    start_model_download,
-                    inputs=[mm_dl_dd],
-                    outputs=[mm_dl_log, mm_catalog_df, mm_dl_dd, mm_del_dd],
-                )
-
-                mm_del_btn.click(
-                    delete_local_model,
-                    inputs=[mm_del_dd],
-                    outputs=[mm_del_status, mm_catalog_df, mm_dl_dd, mm_del_dd],
+                mm_run_btn.click(
+                    _mm_run_action,
+                    inputs=[mm_action_dd, mm_catalog_df],
+                    outputs=[mm_log, mm_catalog_df],
                 )
 
     return demo
