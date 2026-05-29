@@ -45,6 +45,7 @@ os.environ.setdefault("MAS_FORCE_DISABLE_TORCHVISION", "1")
 # at call time (not import time), so patching the module attribute propagates correctly.
 
 import inference_utils.inference_mas as _base  # noqa: E402
+from prompts import DOMAIN_SYSTEM_PROMPTS, set_active_domain  # noqa: E402
 
 _MODEL_CACHE: Dict[str, Tuple[Any, Any]] = {}
 _CURRENT_STYLE: Optional[str] = None
@@ -102,12 +103,15 @@ def _run_single_question(
     device: str,
     num_rounds: int,
     latent_steps: int,
+    domain: str = "general",
 ) -> Tuple[str, str]:
     """
     Run the MAS pipeline on one question.
     Returns (captured_stdout, parsed_answer_string).
     """
     import argparse as _ap
+
+    set_active_domain(domain)
 
     # Write question to a temporary medqa-format JSON
     tmp_json = tempfile.mktemp(suffix=".json")
@@ -251,6 +255,7 @@ def respond(
     message: str,
     history: List[Dict],
     style: str,
+    domain: str,
     num_rounds: int,
     latent_steps: int,
     device: str,
@@ -265,7 +270,7 @@ def respond(
     _CURRENT_STYLE = style
 
     try:
-        stdout, parsed = _run_single_question(style, message, device, num_rounds, latent_steps)
+        stdout, parsed = _run_single_question(style, message, device, num_rounds, latent_steps, domain)
         reply = _build_reply(style, parsed, stdout)
     except Exception as exc:
         reply = f"❌ Error during inference:\n```\n{exc}\n```"
@@ -297,6 +302,11 @@ def build_ui() -> gr.Blocks:
                     choices=list(STYLE_SPECS.keys()),
                     value="sequential_light",
                     label="Collaboration style",
+                )
+                domain_dd = gr.Dropdown(
+                    choices=list(DOMAIN_SYSTEM_PROMPTS.keys()),
+                    value="general",
+                    label="Reasoning domain",
                 )
                 gr.Markdown(
                     "> ℹ️ **First use:** model weights are downloaded from HuggingFace "
@@ -334,7 +344,7 @@ def build_ui() -> gr.Blocks:
         for trigger in (send_btn.click, msg.submit):
             trigger(
                 respond,
-                inputs=[msg, state, style_dd, rounds_sl, latent_sl, device_dd],
+                inputs=[msg, state, style_dd, domain_dd, rounds_sl, latent_sl, device_dd],
                 outputs=[chatbot, state, msg],
             )
 

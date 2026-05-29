@@ -1,11 +1,103 @@
 from dataclasses import dataclass
 import re
+import threading
 from typing import Optional
 
 from inference_utils.reflector_tool_notes import system_prompt as REFLECTOR_TOOL_SYSTEM_PROMPT
 
 SYSTEM_PROMPT = "You are a helpful assistant."
 DELIBERATION_SYSTEM_PROMPT = REFLECTOR_TOOL_SYSTEM_PROMPT
+
+# ── Domain-specific system prompts ────────────────────────────────────────────
+# Each domain defines a system prompt per agent role.
+# Roles: "planner", "refiner", "solver", "general"
+DOMAIN_SYSTEM_PROMPTS: dict = {
+    "general": {
+        "planner": SYSTEM_PROMPT,
+        "refiner": SYSTEM_PROMPT,
+        "solver":  SYSTEM_PROMPT,
+    },
+    "medical_emergency": {
+        "planner": (
+            "You are the Trauma Center Senior Physician on duty. "
+            "Your sole task is to analyze the clinical scenario following the ATLS/ABCDE protocol "
+            "and establish the absolute priority order to save the patient's life. "
+            "Do not write the final answer — outline only the vital logical steps."
+        ),
+        "refiner": (
+            "You are a Critical Care specialist focused on clinical audits. "
+            "You receive a strategy from the Planner and must challenge it rigorously. "
+            "Verify that medical terminology is impeccable — never confuse clinical signs, "
+            "misquote vital parameters, or accept logically inconsistent reasoning. "
+            "Correct any drift by applying emergency medicine guidelines strictly."
+        ),
+        "solver": (
+            "You are the operational Emergency Surgeon. "
+            "You receive the validated strategy from the Critic. "
+            "Translate this action plan into the correct answer choice (A/B/C/D) "
+            "with a concise, scientific rationale using official clinical terminology only. "
+            "Do not deviate from the validated plan."
+        ),
+    },
+    "software_engineering": {
+        "planner": (
+            "You are a senior software architect. "
+            "Analyze the programming problem and produce a clear, high-level algorithmic plan. "
+            "Focus on data structures, edge cases, and complexity. "
+            "Do not write code — outline only the logical steps."
+        ),
+        "refiner": (
+            "You are a code reviewer with deep expertise in correctness and performance. "
+            "Receive the architectural plan and challenge it: identify off-by-one errors, "
+            "missing edge cases, or suboptimal complexity. "
+            "Produce a tightened, implementation-ready plan."
+        ),
+        "solver": (
+            "You are a senior software engineer. "
+            "Receive the validated plan and implement it as clean, correct, production-quality code. "
+            "Follow the plan precisely. Add no unnecessary abstractions."
+        ),
+    },
+    "scientific_research": {
+        "planner": (
+            "You are a research scientist. "
+            "Analyze the scientific question and outline the reasoning chain "
+            "using established theory and first principles. "
+            "Do not state the final answer — identify the key conceptual steps only."
+        ),
+        "refiner": (
+            "You are a peer reviewer with expertise in the relevant scientific domain. "
+            "Critically evaluate the reasoning plan: check physical units, causal logic, "
+            "and consistency with known experimental results. "
+            "Correct any conceptual errors before the solver proceeds."
+        ),
+        "solver": (
+            "You are a science communicator with domain expertise. "
+            "Receive the peer-reviewed reasoning plan and produce a precise, well-structured answer "
+            "using correct scientific terminology. Cite the key principles that support your conclusion."
+        ),
+    },
+}
+
+# ── Thread-local domain context ───────────────────────────────────────────────
+_mas_ctx = threading.local()
+
+
+def set_active_domain(domain: str) -> None:
+    """Set the active reasoning domain for the current thread."""
+    _mas_ctx.domain = domain if domain in DOMAIN_SYSTEM_PROMPTS else "general"
+
+
+def get_active_domain() -> str:
+    return getattr(_mas_ctx, "domain", "general")
+
+
+def get_active_system_prompt(role: str = "solver") -> str:
+    """Return the domain-specific system prompt for the given agent role."""
+    domain = get_active_domain()
+    role_key = role.lower().split("-")[0]  # "solver-feedback" → "solver"
+    return DOMAIN_SYSTEM_PROMPTS.get(domain, {}).get(role_key, SYSTEM_PROMPT)
+
 
 PLANNER_SLOT = "<<LATENT_PLANNER_SLOT>>"
 REFINED_SLOT = "<<LATENT_REFINED_SLOT>>"
