@@ -19,7 +19,534 @@ Scaling agent collaboration through latent-space recursion.
     <a href="https://www.linkedin.com/posts/jiaruzou_recursivemas-recurisvelearning-multiagentsystems-ugcPost-7455645681341493248-ioLJ/?utm_source=share&utm_medium=member_desktop&rcm=ACoAADc5TzgBN_tNOuzpi7kE7n6dZ0y13EkxZOs"><img src="https://img.shields.io/badge/LinkedIn-Coverage-0A66C2.svg?logo=linkedin&logoColor=white" alt="LinkedIn Coverage"></a>
     <a href="https://x.com/Jiaru_Zou/status/2049551828296389118"><img src="https://img.shields.io/badge/Twitter-Coverage-1DA1F2.svg?logo=x" alt="Twitter Coverage"></a>
     <a href="https://venturebeat.com/ai/how-recursivemas-speeds-up-multi-agent-inference-by-2-4x-and-reduces-token-usage-by-75"><img src="https://img.shields.io/badge/Venture-Beat-EE1C25.svg?labelColor=111111&color=EE1C25&logo=venturebeat&logoColor=white" alt="VentureBeat Coverage"></a>
+    <a href="https://github.com/danielesalpietro/RecursiveMAS/blob/feature/domain-system-prompts/VERSION"><img src="https://img.shields.io/badge/HOUSE-v1.1.1-4CAF50.svg" alt="HOUSE Version"></a>
 </p>
+
+
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/9c09261a-c9e7-4851-8462-eeda69989b4e" controls width="300"></video>
+</p>
+
+## 📰 News
+
+**[2026.05.29]** **HOUSE v1.1.1** — Gradio web UI rebrand with Chat and Batch Evaluation modes, domain-specific agent prompts, advanced inference controls, full run metadata, and evaluation parser bias fixes. See [Changelog](#-changelog) for details.
+
+**[2026.05.24]** Check out the [VentureBeat article](https://t.co/KSQwBwpC4W) featuring our research on RecursiveMAS!
+
+**[2026.05.01]** Ours paper is featured as [🤗 HuggingFace 1st Paper of the Week/Day](https://huggingface.co/papers/2604.25917)!
+
+**[2026.04.28]** All [collaboration styles](https://huggingface.co/RecursiveMAS/collections) and [model checkpoints](https://huggingface.co/RecursiveMAS/models), with [examplified downstream inference](https://github.com/RecursiveMAS/RecursiveMAS) are now available. Stay tuned for the complete training/inference pipeline and additional features!
+
+**[2026.04.28]** We have released the [RecursiveMAS paper](https://huggingface.co/papers/2604.25917)! 
+
+
+## 🌟 Introduction
+
+<p align="center">
+  <img src="assets/exps.png" width="100%" alt="RecursiveMAS Overview">
+</p>
+
+**RecursiveMAS** is a multi-agent framework that scales agent collaboration through **latent-space recursion**. Instead of treating each LLM agent as an isolated module, RecursiveMAS casts the entire multi-agent system as a **unified recursive computation**. Heterogeneous agents are connected through lightweight RecursiveLink modules, allowing agents to iteratively exchange, refine, and evolve their latent states across recursion rounds.
+
+## 📋 Supported Features
+
+✅ Release All Collaboration Patterns (Sequential, Mixture, Deliberation, Distillation).
+
+✅ Release Demo Code for Inference (Commands Provided Below).
+
+✅ Gradio Web UI (**HOUSE**) with interactive Chat and researcher-grade Batch Evaluation modes.
+
+✅ Docker GPU + CPU support with 3-level health checks.
+
+✅ Domain-specific agent prompts (general, medical, software engineering, scientific research).
+
+☑️ Add Complete Inference Pipeline Across All Downstreams.
+
+☑️ Add All Training Data & Implementation Details.
+
+☑️ Add Additional Supported Model Family & MAS Collaboration Patterns.
+
+## 🛠️ Environment Setup
+
+This repository provides the code for running RecursiveMAS under different multi-agent collaboration styles. 
+
+To begin with, we recommend creating a new conda environment:
+
+```bash
+conda create -n recursivemas python=3.10 -y
+conda activate recursivemas
+```
+
+Install the required packages:
+
+```bash
+pip install -r requirements.txt
+```
+
+For Deliberation-Style, the Tool-Caller Agent requires external search tools to retrieve information. 
+Please set up a search API key (e.g., a Tavily API key) in `.env` file:
+```bash
+TAVILY_API_KEY=your_tavily_api_key_here
+```
+
+## 🐳 Docker: One-Click Setup
+
+> Get a fully isolated, GPU-ready environment running in **~60 seconds** — no conda, no manual driver configuration.
+
+### Prerequisites
+
+| Requirement | Notes |
+|---|---|
+| [Docker Desktop](https://docs.docker.com/get-docker/) ≥ 24 | WSL2 backend required on Windows |
+| NVIDIA driver ≥ 470 | [Linux: NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) · Windows: driver with WSL2 support |
+| [Hugging Face token](https://huggingface.co/settings/tokens) | Read access, for model downloads |
+
+### Step 1 — Configure secrets
+
+Copy the provided template and fill in your keys (**never commit `.env`**):
+
+```bash
+cp .env.example .env
+```
+
+```env
+HF_TOKEN=hf_your_token_here
+TAVILY_API_KEY=your_tavily_key_here   # required only for deliberation style
+```
+
+### Step 2 — Build the image
+
+```bash
+docker compose build recursivemas
+```
+
+The first build takes ~5 minutes to pull the CUDA base layer. All subsequent builds are fully cached.
+
+### Step 3 — Run batch inference
+
+```bash
+docker compose up recursivemas
+```
+
+Models are downloaded from Hugging Face on first run and persisted in the `hf_cache` Docker volume — subsequent runs start immediately.
+
+### Step 4 — Launch the HOUSE web UI
+
+```bash
+docker compose up serve
+```
+
+Open [http://localhost:7860](http://localhost:7860). The UI exposes all 5 collaboration styles. Models are loaded into VRAM on the first request and stay warm for subsequent ones — no reload between questions.
+
+<p align="center">
+  <img src="assets/webui.png" width="90%" alt="HOUSE — RecursiveMAS Web UI">
+</p>
+
+---
+
+### 🩺 Health Check
+
+Verify the container before running inference:
+
+```bash
+# Level 1 — Python dependencies + all 5 styles registered (no GPU needed)
+docker run --rm --entrypoint python recursivemas healthcheck.py --level 1
+
+# Level 2 — CUDA device detection + tensor allocation
+docker run --rm --entrypoint python recursivemas healthcheck.py --level 2
+
+# Level 3 — HuggingFace Hub reachability (requires HF_TOKEN env var)
+docker run --rm --entrypoint python -e HF_TOKEN=$HF_TOKEN recursivemas healthcheck.py --level 3
+```
+
+Expected output for a passing level-1 check:
+
+```
+======================================================
+  RecursiveMAS — container health check
+======================================================
+
+[Level 1] Python dependencies + internal modules
+[PASS] torch: version=2.9.0+cu128
+[PASS] transformers: version=5.3.0
+[PASS] huggingface_hub: version=1.7.1
+[PASS] accelerate: version=1.12.0
+[PASS] internal modules (modeling, load_from_repo, prompts): 5 styles registered
+
+======================================================
+All 5/5 checks passed.
+```
+
+---
+
+### ⚠️ No GPU? CPU Fallback
+
+If your machine has no NVIDIA GPU, or GPU passthrough is not yet configured (common on **Windows + WSL2**), you can still explore the web UI and run inference on CPU.
+
+**Step 1 — Create `docker-compose.override.yml`** in the project root:
+
+```yaml
+services:
+  recursivemas:
+    runtime: runc
+    deploy: {}
+  serve:
+    runtime: runc
+    deploy: {}
+```
+
+The `runtime: runc` key forces the standard Docker runtime, bypassing the NVIDIA hook entirely.
+
+**Step 2 — Start the web UI**
+
+```bash
+docker compose down          # remove any existing containers
+docker compose up serve      # start fresh without GPU reservation
+```
+
+Open [http://localhost:7860](http://localhost:7860). The **Device** dropdown will show `cpu` only — select it and send your question.
+
+> CPU inference is orders of magnitude slower than GPU (several minutes per question vs. a few seconds). It is suitable for exploring the UI and validating the pipeline end-to-end, not for benchmarking.
+
+**Alternatively**, bypass Compose entirely with `docker run`:
+
+```bash
+# Linux / macOS
+docker run --rm -p 7860:7860 \
+  -e HF_TOKEN="" -e TAVILY_API_KEY="" \
+  -v recursivemas_hf_cache:/hf_cache \
+  --entrypoint python recursivemas-serve \
+  serve.py --host 0.0.0.0 --port 7860
+
+# Windows PowerShell
+docker run --rm -p 7860:7860 `
+  -e HF_TOKEN="" -e TAVILY_API_KEY="" `
+  -v recursivemas_hf_cache:/hf_cache `
+  --entrypoint python recursivemas-serve `
+  serve.py --host 0.0.0.0 --port 7860
+```
+
+**Fixing GPU passthrough on Windows (WSL2)** — to unlock full GPU speed:
+
+1. Run `wsl --list --verbose` — the `VERSION` column must show **2** (not 1)
+2. Update the NVIDIA Windows driver to **≥ 470** from [nvidia.com/drivers](https://www.nvidia.com/drivers)
+3. Docker Desktop → **Settings → Resources → WSL Integration** → enable your distro
+4. Restart Docker Desktop, delete the override file, and re-run `docker compose up serve`
+
+---
+
+## 🏥 HOUSE Web UI
+
+**HOUSE** (*Heuristic Orchestration Using Specialist Ensembles*) is the interactive front-end for RecursiveMAS, named in homage to Dr. Gregory House M.D. Three specialist agents — Planner, Critic/Refiner, and Solver — debate, challenge, and converge on an answer through latent-space recursion.
+
+The UI is versioned via the `VERSION` file at the project root (`major.minor.patch`). Current release: **v1.1.1**.
+
+### 💬 Chat Mode
+
+Ask any single question in natural language. The pipeline runs end-to-end and returns:
+
+- **Answer** — the parsed final answer
+- **Solver output** — the full reasoning chain from Agent 3
+- **Planner / Critic outputs** — collapsible sections showing intermediate agent reasoning
+- **Run info** — a full metadata table attached to every reply (see below)
+
+### 📊 Batch Evaluation Mode
+
+Run a complete benchmark evaluation as researchers do — select a dataset, configure the pipeline, press **▶ Run Batch**, and watch live progress stream to the log panel. When the run completes, a **⬇ Download results (JSONL)** button appears with one record per question.
+
+| Dataset | Questions | Domain |
+|---------|-----------|--------|
+| `math500` | 500 | Mathematics (MATH benchmark) |
+| `medqa` | ~1,200 | Medical QA (USMLE-style) |
+| `gpqa` | 448 | Graduate-level science (GPQA Diamond) |
+| `mbppplus` | 378 | Python code generation |
+
+Only one batch run can execute at a time. The Chat tab displays a warning if a batch is in progress.
+
+### ⚙️ Settings Reference
+
+| Setting | Tab | Default | Notes |
+|---------|-----|---------|-------|
+| Collaboration style | Both | `sequential_light` | One of 5 styles |
+| Reasoning domain | Chat | `general` | See domain prompts below |
+| Recursive rounds | Both | 3 | 1–5 |
+| Latent steps | Both | 32 | 8–64, step 8 |
+| Device | Both | `cuda` / `cpu` | Auto-detected |
+| Temperature *(advanced)* | Both | 0.6 | 0.0–1.0 |
+| Top-p *(advanced)* | Both | 0.95 | 0.0–1.0 |
+| Seed *(advanced)* | Both | 42 | Integer, for reproducibility |
+| N samples *(batch only)* | Batch | −1 | −1 = full benchmark |
+
+### 🧾 Run Metadata
+
+Every chat reply includes a collapsible **Run info** table with all parameters used, start/end timestamps, and elapsed time — making every result fully reproducible:
+
+```
+| Parameter        | Value             |
+|------------------|-------------------|
+| Version          | v1.1.1            |
+| Style            | sequential_light  |
+| Domain           | medical_emergency |
+| Recursive rounds | 3                 |
+| Latent steps     | 32                |
+| Temperature      | 0.6               |
+| Top-p            | 0.95              |
+| Seed             | 42                |
+| Device           | cuda              |
+| Started          | 2026-05-29 17:12:54 |
+| Finished         | 2026-05-29 17:13:09 |
+| Elapsed          | 0:00:15           |
+```
+
+### 🌐 Domain-Specific Agent Prompts
+
+The **Reasoning domain** dropdown activates role-specific system prompts for each agent, replacing the default general-purpose instructions:
+
+| Domain | Planner | Critic / Refiner | Solver |
+|--------|---------|-----------------|--------|
+| `general` | General reasoning | General reasoning | General reasoning |
+| `medical_emergency` | Trauma Senior Physician | Critical Care specialist | Emergency Surgeon |
+| `software_engineering` | Senior Software Architect | Senior Code Reviewer | Senior Engineer |
+| `scientific_research` | Principal Investigator | Peer Reviewer | Science Communicator |
+
+Domain context is propagated via thread-local storage so it reaches every `render_chat_prompt` call inside the inference pipeline without modifying the pipeline API.
+
+---
+
+## 💥 Quick Start
+
+### 🤖 Load Model Checkpoints
+
+To run RecursiveMAS, you need to download and store the checkpoints for each agent role in the multi-agent system from our Hugging Face release.
+
+The checkpoints are organized by collaboration style. Each collection contains the individual role-specific agent together with their RecursiveLink modules.
+
+### [Sequential-Style (Light) MAS Collection](https://huggingface.co/collections/RecursiveMAS/sequential-style-recursivemas)
+
+| **Model Organization** | **Download** |
+| ---------------------- | ------------ |
+| Sequential-Light-Planner-Qwen3-1.7B | [🤗 HuggingFace](https://huggingface.co/RecursiveMAS/Sequential-Light-Planner-Qwen3-1.7B) |
+| Sequential-Light-Critic-Llama3.2-1B | [🤗 HuggingFace](https://huggingface.co/RecursiveMAS/Sequential-Light-Critic-Llama3.2-1B) |
+| Sequential-Light-Solver-Qwen2.5-Math-1.5B | [🤗 HuggingFace](https://huggingface.co/RecursiveMAS/Sequential-Light-Solver-Qwen2.5-Math-1.5B) |
+| Sequential-Light-Outerlinks | [🤗 HuggingFace](https://huggingface.co/RecursiveMAS/Sequential-Light-Outerlinks) |
+
+### [Sequential-Style (Scaled) MAS Collection](https://huggingface.co/collections/RecursiveMAS/sequential-style-recursivemas)
+
+| **Model Organization** | **Download** |
+| ---------------------- | ------------ |
+| Sequential-Scaled-Planner-Gemma3-4B | [🤗 HuggingFace](https://huggingface.co/RecursiveMAS/Sequential-Scaled-Planner-Gemma3-4B) |
+| Sequential-Scaled-Critic-Llama3.2-3B | [🤗 HuggingFace](https://huggingface.co/RecursiveMAS/Sequential-Scaled-Critic-Llama3.2-3B) |
+| Sequential-Scaled-Solver-Qwen3.5-4B | [🤗 HuggingFace](https://huggingface.co/RecursiveMAS/Sequential-Scaled-Solver-Qwen3.5-4B) |
+| Sequential-Scaled-Outerlinks | [🤗 HuggingFace](https://huggingface.co/RecursiveMAS/Sequential-Scaled-Outerlinks) |
+
+### [Mixture-Style MAS Collection](https://huggingface.co/collections/RecursiveMAS/mixture-style-recursivemas)
+
+| **Model Organization** | **Download** |
+| ---------------------- | ------------ |
+| Mixture-Math-DeepSeek-R1-Distill-Qwen-1.5B | [🤗 HuggingFace](https://huggingface.co/RecursiveMAS/Mixture-Math-DeepSeek-R1-Distill-Qwen-1.5B) |
+| Mixture-Code-Qwen2.5-Coder-3B | [🤗 HuggingFace](https://huggingface.co/RecursiveMAS/Mixture-Code-Qwen2.5-Coder-3B) |
+| Mixture-Science-BioMistral-7B | [🤗 HuggingFace](https://huggingface.co/RecursiveMAS/Mixture-Science-BioMistral-7B) |
+| Mixture-Summarizer-Qwen3.5-2B | [🤗 HuggingFace](https://huggingface.co/RecursiveMAS/Mixture-Summarizer-Qwen3.5-2B) |
+| Mixture-Outerlinks | [🤗 HuggingFace](https://huggingface.co/RecursiveMAS/Mixture-Outerlinks) |
+
+### [Distillation-Style MAS Collection](https://huggingface.co/collections/RecursiveMAS/distillation-style-recursivemas)
+
+| **Model Organization** | **Download** |
+| ---------------------- | ------------ |
+| Distillation-Expert-Qwen3.5-9B | [🤗 HuggingFace](https://huggingface.co/RecursiveMAS/Distillation-Expert-Qwen3.5-9B) |
+| Distillation-Learner-Qwen3.5-4B | [🤗 HuggingFace](https://huggingface.co/RecursiveMAS/Distillation-Learner-Qwen3.5-4B) |
+| Distillation-Outerlinks | [🤗 HuggingFace](https://huggingface.co/RecursiveMAS/Distillation-Outerlinks) |
+
+### [Deliberation-Style MAS Collection](https://huggingface.co/collections/RecursiveMAS/deliberation-style-recursivemas)
+
+| **Model Organization** | **Download** |
+| ---------------------- | ------------ |
+| Deliberation-Reflector-Qwen3.5-4B | [🤗 HuggingFace](https://huggingface.co/RecursiveMAS/Deliberation-Reflector-Qwen3.5-4B) |
+| Deliberation-Toolcaller-Qwen3.5-4B | [🤗 HuggingFace](https://huggingface.co/RecursiveMAS/Deliberation-Toolcaller-Qwen3.5-4B) |
+| Deliberation-Outerlinks | [🤗 HuggingFace](https://huggingface.co/RecursiveMAS/Deliberation-Outerlinks) |
+
+
+Here is an example of how to load the whole MAS pipeline:
+
+```python
+from system_loader import load_mas_system
+
+mas = load_mas_system(
+    style="sequential_light",
+    device="cuda",
+    trust_remote_code=True,
+)
+
+planner = mas.agents["planner"].model
+critic = mas.agents["critic"].model
+solver = mas.agents["solver"].model
+```
+
+Detailed running code for loading agents and running RecursiveMAS on downstream tasks is provided in `run.py`. 
+
+
+### 🔍 Clone the Repository
+
+Next, clone our repository and enter the project directory:
+
+```bash
+git clone https://github.com/RecursiveMAS/RecursiveMAS.git
+cd RecursiveMAS
+```
+
+The current repository is organized as follows:
+
+```text
+RecursiveMAS/
+├── README.md
+├── VERSION                         # semantic version (major.minor.patch)
+├── __init__.py
+├── run.py                          # unified CLI entry point for batch inference
+├── serve.py                        # HOUSE web UI (Chat + Batch Evaluation tabs)
+├── healthcheck.py                  # 3-level container health check
+├── load_from_repo.py
+├── hf_resolver.py
+├── modeling.py
+├── system_loader.py
+├── prompts.py                      # system prompts + domain-specific agent roles
+├── requirements.txt
+├── requirements-serve.txt          # extra deps for serve.py (gradio)
+├── Dockerfile                      # batch inference image
+├── Dockerfile.serve                # HOUSE web UI image
+├── docker-compose.yml              # orchestrates both services + shared hf_cache volume
+├── .dockerignore
+├── .env.example                    # template — copy to .env and fill in keys
+├── serve-cpu.bat                   # Windows one-click CPU launch (no GPU required)
+├── assets/
+├── dataset/
+└── inference_utils/
+    ├── __init__.py
+    ├── answer_utils.py             # answer parsing + evaluation comparison
+    ├── lcb_utils.py
+    ├── reflector_tool_notes.py
+    ├── inference_mas.py
+    ├── inference_mas_mixture.py
+    ├── inference_mas_distill.py
+    └── inference_mas_deliberation.py
+```
+
+The key components are:
+
+- `run.py`: the unified entry point for running RecursiveMAS inference.
+- `serve.py`: the HOUSE Gradio web UI with Chat and Batch Evaluation tabs.
+- `load_from_repo.py`: maps each MAS style to our released Hugging Face checkpoints and dataset defaults.
+- `hf_resolver.py`: resolves and load the Hugging Face checkpoints.
+- `modeling.py`: implements RecursiveLink modules.
+- `system_loader.py`: provides a high-level API for loading a full released multi-agent system.
+- `prompts.py`: system prompts and domain-specific agent role definitions.
+- `inference_utils/`: contains inference pipelines and evaluation utilities for different MAS structures.
+
+### ⚙️ Running RecursiveMAS at Different Scales
+
+We provide Sequential-style RecursiveMAS under both lightweight and scaled settings.
+
+- **Sequential-style (Light)** uses lightweight agents for efficient recursive collaboration.
+```bash
+python run.py --style sequential_light --batch_size 32 --temperature 0.6 --top_p 0.95 --dataset math500 --seed 42 --trust_remote_code 1 --device cuda
+```
+
+- **Sequential-style (Scaled)** uses stronger LLM agents to further improve reasoning performance.
+```bash
+python run.py --style sequential_scaled --batch_size 16 --temperature 0.6 --top_p 0.95 --dataset math500 --seed 42 --trust_remote_code 1 --device cuda
+```
+
+### 🧩 Exploring Various Collaboration Patterns
+
+RecursiveMAS can also be adapted to different MAS collaboration patterns beyond the sequential setting.
+
+- **Mixture-style RecursiveMAS** coordinates multiple domain-specialized agents and aggregates their information through a summarizer.
+```bash
+python run.py --style mixture --batch_size 16 --temperature 0.6 --top_p 0.95 --dataset math500 --seed 42 --trust_remote_code 1 --device cuda
+```
+
+- **Distillation-style RecursiveMAS** enables a larger Expert and a smaller Learner to interact recursively, improving the Learner while retaining better efficiency.
+```bash
+python run.py --style distillation --batch_size 16 --temperature 0.6 --top_p 0.95 --dataset math500 --seed 42 --trust_remote_code 1 --device cuda
+```
+
+- **Deliberation-style RecursiveMAS** supports recursive coordination between a Reflector and a Tool-Caller for tool-integrated reasoning.
+```bash
+python run.py --style deliberation --batch_size 16 --temperature 0.6 --top_p 0.95 --dataset math500 --seed 42 --trust_remote_code 1 --device cuda
+```
+
+---
+
+## 📋 Changelog
+
+### v1.1.1 — 2026-05-29
+
+#### 🏥 HOUSE Web UI (`serve.py`)
+
+- **HOUSE branding** — project renamed HOUSE (*Heuristic Orchestration Using Specialist Ensembles*), inspired by Dr. Gregory House M.D. Version displayed in browser tab and header, driven by the `VERSION` file.
+- **Two-tab layout** — Chat tab for interactive single-question use; Batch Evaluation tab for full benchmark runs.
+- **Batch Evaluation tab** — dataset selector (`math500`, `medqa`, `gpqa`, `mbppplus`), N samples field (−1 = full benchmark), live streaming progress log, and a download button for the result JSONL when the run completes.
+- **Run metadata** — every chat reply includes a collapsible table with all parameters used (style, domain, rounds, latent steps, temperature, top-p, seed, device, version, start/end timestamps, elapsed time).
+- **Advanced settings accordion** — temperature, top-p, and seed are now exposed in the UI (previously hardcoded), making all inference parameters fully configurable and reproducible.
+- **Concurrent-run guard** — a threading lock prevents two batch runs from executing simultaneously; the Chat tab displays a warning if a batch is in progress.
+- **Warm model cache** — models stay loaded in VRAM between requests; style switches evict and reload automatically.
+
+#### 🌐 Domain-Specific Agent Prompts (`prompts.py`, `inference_utils/inference_mas.py`)
+
+- Four reasoning domains added: `general`, `medical_emergency`, `software_engineering`, `scientific_research`.
+- Each domain provides role-specific system prompts for Planner, Refiner, and Solver agents.
+- Domain context is propagated via thread-local storage (`threading.local`) — zero changes to the pipeline API.
+- Agent role aliases (`agent1` → `planner`, `agent2` → `refiner`, `agent3` → `solver`) resolved correctly at every `render_chat_prompt` call site.
+
+#### 🐛 Evaluation Parser Bias Fixes (`inference_utils/answer_utils.py`, `inference_utils/inference_mas.py`)
+
+Three systematic evaluation bugs were identified and fixed:
+
+1. **`compare_answers()` cascading A-default** — `default="A"` was passed for both pred and gold, causing parse failures on either side to be silently scored as correct when gold happened to be A. Now uses `default=None`; `correct=False` whenever either side cannot be parsed.
+2. **`extract_gold_answer()` silent A-default** — unparseable gold answers for choice datasets silently became `"A"`, skewing the gold distribution. Now returns `None` on failure.
+3. **Latent solver output heuristic** — `run_solver_latent_stage()` used `max_new_tokens` to discriminate prompt-prefixed vs generation-only outputs; unreliable when the model generates very short answers (e.g., just `\boxed{B}`). Switched to `prompt_len` as the discriminator.
+
+#### 🐳 Docker & Infrastructure
+
+- `Dockerfile` and `Dockerfile.serve` with CUDA 12.4 + cuDNN runtime base image.
+- `docker-compose.yml` with two services (`recursivemas` batch, `serve` web UI) sharing a `hf_cache` named volume.
+- `healthcheck.py` — 3-level check: Python deps + 5 styles (L1), CUDA + tensor allocation (L2), HuggingFace Hub reachability (L3).
+- `.env.example` template; `.env` added to `.gitignore` to prevent secret exposure.
+- `serve-cpu.bat` for Windows users without GPU passthrough configured.
+- `docker-compose.override.yml` pattern documented for CPU-only testing.
+
+---
+
+## 🙏 Acknowledgements
+
+This project is built upon the excellent open-source community. We sincerely thank the developers and maintainers of the following libraries and resources:
+
+- [vLLM](https://github.com/vllm-project/vllm) for supporting efficient LLM inference and serving.
+- [ARPO](https://github.com/RUC-NLPIR/ARPO) for providing useful references on agentic tool-use systems and efficient tool-calling workflows.
+- [TextGrad](https://github.com/zou-group/textgrad) for its pioneering framework on text-based optimization and natural-language feedback for compound agentic systems.
+
+<!-- 
+## 🚀 Contributing
+
+We welcome discussions and contributions to RecursiveMAS. If you would like to suggest improvements, please feel free to contact us.
+
+- [Xiyuan Yang](mailto:xiyuany4@illinois.edu)
+- [Jiaru Zou](mailto:jiaru@stanford.edu)
+
+--- -->
+
+## 📚 Citation
+```text
+@misc{recursivemas,
+      title={Recursive Multi-Agent Systems}, 
+      author={Xiyuan Yang and Jiaru Zou and Rui Pan and Ruizhong Qiu and Pan Lu and Shizhe Diao and Jindong Jiang and Hanghang Tong and Tong Zhang and Markus J. Buehler and Jingrui He and James Zou},
+      year={2026},
+      eprint={2604.25917},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2604.25917}, 
+}
+```
+
 
 
 <p align="center">
