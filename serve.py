@@ -348,6 +348,17 @@ def respond(
 _BATCH_LOCK = threading.Lock()   # prevents concurrent batch runs
 _BATCH_DATASETS = ["math500", "medqa", "gpqa", "mbppplus"]
 
+# inference_mas.py defaults dataset_split to "test", but build_common_cli in
+# run.py overrides it with "" (empty), which HuggingFace rejects.  Map each
+# dataset to the split it actually uses so we can pass it explicitly.
+# medqa and mbppplus use local code paths and ignore the split value entirely.
+_DATASET_SPLITS: Dict[str, str] = {
+    "math500": "test",    # HuggingFaceH4/MATH-500 → test split
+    "medqa":   "train",   # local __local_medqa__ path — value not used
+    "gpqa":    "train",   # Idavidrein/gpqa gpqa_diamond → train split
+    "mbppplus": "test",   # __mbppplus__ local path — value not used
+}
+
 
 class _QueueWriter:
     """Redirect stdout from the inference thread into a Queue."""
@@ -398,11 +409,12 @@ def _batch_worker(
             sample_seed=-1,
         )
 
+        dataset_split = _DATASET_SPLITS.get(dataset.lower(), "test")
         module, cli_args = build_cli_for_style(
             args=fake_args,
             family=family,
             dataset_arg=dataset,
-            dataset_split="",
+            dataset_split=dataset_split,
             paths=paths,
             latent_steps=latent_steps,
             max_new_tokens=max_new_tokens,
