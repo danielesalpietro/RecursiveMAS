@@ -284,14 +284,18 @@ def respond(
 
 # ── Gradio layout ─────────────────────────────────────────────────────────────
 
+_VERSION = (THIS_DIR / "VERSION").read_text(encoding="utf-8").strip()
+
+
 def build_ui() -> gr.Blocks:
     device_opts = ["cuda", "cpu"] if torch.cuda.is_available() else ["cpu"]
 
-    with gr.Blocks(title="RecursiveMAS") as demo:
+    with gr.Blocks(title=f"HOUSE — RecursiveMAS v{_VERSION}") as demo:
         gr.Markdown(
-            "# RecursiveMAS\n"
-            "Multi-agent reasoning via latent-space recursion.  \n"
-            "Models are loaded into VRAM on the first request and stay warm for subsequent ones."
+            f"# 🏥 HOUSE &nbsp;<sup style='font-size:0.5em;color:#888'>v{_VERSION}</sup>\n"
+            "### *Multi-agent diagnostic reasoning via latent-space recursion*\n"
+            "> Inspired by Dr. Gregory House — three specialist agents debate, refine, and solve.  \n"
+            "> Models load into VRAM on first request and stay warm for subsequent ones."
         )
 
         with gr.Row():
