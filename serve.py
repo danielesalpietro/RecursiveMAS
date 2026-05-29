@@ -16,8 +16,11 @@ import gc
 import io
 import json
 import os
+import queue as _queue
 import sys
 import tempfile
+import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -45,6 +48,7 @@ os.environ.setdefault("MAS_FORCE_DISABLE_TORCHVISION", "1")
 # at call time (not import time), so patching the module attribute propagates correctly.
 
 import inference_utils.inference_mas as _base  # noqa: E402
+from prompts import DOMAIN_SYSTEM_PROMPTS, set_active_domain  # noqa: E402
 
 _MODEL_CACHE: Dict[str, Tuple[Any, Any]] = {}
 _CURRENT_STYLE: Optional[str] = None
@@ -80,6 +84,7 @@ from run import (  # noqa: E402
 )
 import gradio as gr  # noqa: E402
 
+_VERSION = (THIS_DIR / "VERSION").read_text(encoding="utf-8").strip()
 
 # ── VRAM management ───────────────────────────────────────────────────────────
 
@@ -102,12 +107,18 @@ def _run_single_question(
     device: str,
     num_rounds: int,
     latent_steps: int,
+    domain: str = "general",
+    temperature: float = 0.6,
+    top_p: float = 0.95,
+    seed: int = 42,
 ) -> Tuple[str, str]:
     """
     Run the MAS pipeline on one question.
     Returns (captured_stdout, parsed_answer_string).
     """
     import argparse as _ap
+
+    set_active_domain(domain)
 
     # Write question to a temporary medqa-format JSON
     tmp_json = tempfile.mktemp(suffix=".json")
@@ -128,13 +139,13 @@ def _run_single_question(
             num_recursive_rounds=num_rounds,
             batch_size=1,
             latent_length=latent_steps,
-            temperature=0.6,
-            top_p=0.95,
+            temperature=temperature,
+            top_p=top_p,
             top_k=-1,
             trust_remote_code=1,
             device=device,
-            seed=42,
-            sample_seed=42,
+            seed=seed,
+            sample_seed=seed,
         )
 
         module, cli_args = build_cli_for_style(
@@ -223,7 +234,12 @@ def _parse_agent_outputs(stdout: str) -> Dict[str, str]:
     return sections
 
 
-def _build_reply(style: str, parsed: str, stdout: str) -> str:
+def _build_reply(
+    style: str,
+    parsed: str,
+    stdout: str,
+    run_info: Optional[Dict] = None,
+) -> str:
     agents = _parse_agent_outputs(stdout)
     parts: List[str] = [f"**Style:** `{style}`"]
 
@@ -242,6 +258,25 @@ def _build_reply(style: str, parsed: str, stdout: str) -> str:
                 f"\n<details><summary>{label} output</summary>\n\n{text}\n\n</details>"
             )
 
+    if run_info:
+        info = (
+            f"| Parameter | Value |\n"
+            f"|-----------|-------|\n"
+            f"| Version | `v{run_info['version']}` |\n"
+            f"| Style | `{run_info['style']}` |\n"
+            f"| Domain | `{run_info['domain']}` |\n"
+            f"| Recursive rounds | {run_info['rounds']} |\n"
+            f"| Latent steps | {run_info['latent_steps']} |\n"
+            f"| Temperature | {run_info['temperature']} |\n"
+            f"| Top-p | {run_info['top_p']} |\n"
+            f"| Seed | {run_info['seed']} |\n"
+            f"| Device | `{run_info['device']}` |\n"
+            f"| Started | {run_info['started']} |\n"
+            f"| Finished | {run_info['finished']} |\n"
+            f"| Elapsed | {run_info['elapsed']} |"
+        )
+        parts.append(f"\n<details><summary>Run info</summary>\n\n{info}\n\n</details>")
+
     return "\n".join(parts) if len(parts) > 1 else (parsed or stdout[:3000])
 
 
@@ -251,22 +286,53 @@ def respond(
     message: str,
     history: List[Dict],
     style: str,
+    domain: str,
     num_rounds: int,
     latent_steps: int,
     device: str,
+    temperature: float,
+    top_p: float,
+    seed: int,
 ) -> Tuple[List[Dict], List[Dict], str]:
     global _CURRENT_STYLE
 
     if not message.strip():
         return history, history, ""
 
+    if _BATCH_LOCK.locked():
+        warning = [
+            {"role": "user", "content": message},
+            {"role": "assistant", "content": "⚠️ A batch evaluation is running. Please wait for it to finish before sending chat messages."},
+        ]
+        return history + warning, history + warning, ""
+
     if _CURRENT_STYLE != style and _MODEL_CACHE:
         _evict_cache()
     _CURRENT_STYLE = style
 
     try:
-        stdout, parsed = _run_single_question(style, message, device, num_rounds, latent_steps)
-        reply = _build_reply(style, parsed, stdout)
+        t_start = datetime.now()
+        stdout, parsed = _run_single_question(
+            style, message, device, num_rounds, latent_steps, domain,
+            temperature=temperature, top_p=top_p, seed=seed,
+        )
+        t_end = datetime.now()
+        elapsed = str(t_end - t_start).split(".")[0]  # HH:MM:SS
+        run_info = {
+            "version": _VERSION,
+            "style": style,
+            "domain": domain,
+            "rounds": num_rounds,
+            "latent_steps": latent_steps,
+            "device": device,
+            "temperature": temperature,
+            "top_p": top_p,
+            "seed": seed,
+            "started": t_start.strftime("%Y-%m-%d %H:%M:%S"),
+            "finished": t_end.strftime("%Y-%m-%d %H:%M:%S"),
+            "elapsed": elapsed,
+        }
+        reply = _build_reply(style, parsed, stdout, run_info)
     except Exception as exc:
         reply = f"❌ Error during inference:\n```\n{exc}\n```"
 
@@ -277,66 +343,575 @@ def respond(
     return new_history, new_history, ""
 
 
+# ── Batch evaluation backend ──────────────────────────────────────────────────
+
+_BATCH_LOCK = threading.Lock()   # prevents concurrent batch runs
+_BATCH_STOP_EVENT = threading.Event()  # set to request cooperative stop
+_BATCH_DATASETS = ["math500", "medqa", "gpqa", "mbppplus"]
+
+
+class _BatchStopped(Exception):
+    pass
+
+# inference_mas.py defaults dataset_split to "test", but build_common_cli in
+# run.py overrides it with "" (empty), which HuggingFace rejects.  Map each
+# dataset to the split it actually uses so we can pass it explicitly.
+# medqa and mbppplus use local code paths and ignore the split value entirely.
+_DATASET_SPLITS: Dict[str, str] = {
+    "math500": "test",    # HuggingFaceH4/MATH-500 → test split
+    "medqa":   "train",   # local __local_medqa__ path — value not used
+    "gpqa":    "train",   # Idavidrein/gpqa gpqa_diamond → train split
+    "mbppplus": "test",   # __mbppplus__ local path — value not used
+}
+
+
+class _QueueWriter:
+    """Redirect stdout from the inference thread into a Queue.
+
+    Checks _BATCH_STOP_EVENT on every write so that clicking Stop
+    terminates the batch at the next print call inside the pipeline.
+    """
+    def __init__(self, q: "_queue.Queue[Optional[str]]") -> None:
+        self._q = q
+
+    def write(self, s: str) -> None:
+        if _BATCH_STOP_EVENT.is_set():
+            raise _BatchStopped()
+        if s:
+            self._q.put(s)
+
+    def flush(self) -> None:
+        pass
+
+
+def _batch_worker(
+    style: str,
+    dataset: str,
+    num_samples: int,
+    device: str,
+    rounds: int,
+    latent_steps: int,
+    temperature: float,
+    top_p: float,
+    seed: int,
+    result_jsonl: str,
+    log_q: "_queue.Queue[Optional[str]]",
+) -> None:
+    """Runs the MAS pipeline over a full dataset in a background thread."""
+    import argparse as _ap
+
+    try:
+        paths = resolve_style_paths(style, dataset)
+        family = str(STYLE_SPECS[style]["family"])
+        max_new_tokens = infer_max_new_tokens(style, dataset)
+
+        fake_args = _ap.Namespace(
+            dataset=dataset,
+            dataset_split="",
+            num_recursive_rounds=rounds,
+            batch_size=8,
+            latent_length=latent_steps,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=-1,
+            trust_remote_code=1,
+            device=device,
+            seed=seed,
+            sample_seed=-1,
+        )
+
+        dataset_split = _DATASET_SPLITS.get(dataset.lower(), "test")
+        module, cli_args = build_cli_for_style(
+            args=fake_args,
+            family=family,
+            dataset_arg=dataset,
+            dataset_split=dataset_split,
+            paths=paths,
+            latent_steps=latent_steps,
+            max_new_tokens=max_new_tokens,
+        )
+
+        cli_args += ["--result_jsonl", result_jsonl]
+        if num_samples > 0:
+            # build_common_cli already added --num_samples -1; argparse last-wins
+            cli_args += ["--num_samples", str(num_samples)]
+
+        old_argv = sys.argv[:]
+        sys.argv = [module.__file__ or "batch"] + cli_args
+        try:
+            with contextlib.redirect_stdout(_QueueWriter(log_q)):
+                module.main()
+            log_q.put(None)  # sentinel: success
+        except _BatchStopped:
+            log_q.put("\n⏹ Batch stopped by user.\n")
+            log_q.put(None)
+        except Exception as exc:
+            log_q.put(f"\n❌ Runtime error: {exc}\n")
+            log_q.put(None)
+        finally:
+            sys.argv = old_argv
+
+    except Exception as exc:
+        log_q.put(f"\n❌ Setup error: {exc}\n")
+        log_q.put(None)
+
+
+def stop_batch_eval() -> None:
+    """Signal the running batch worker to stop at its next print call."""
+    _BATCH_STOP_EVENT.set()
+
+
+def run_batch_eval(
+    style: str,
+    dataset: str,
+    num_samples: int,
+    device: str,
+    rounds: int,
+    latent_steps: int,
+    temperature: float,
+    top_p: float,
+    seed: int,
+):
+    """Gradio generator: streams log lines and yields (log_text, file, run_btn, stop_btn)."""
+    import re as _re
+
+    _btn_running = (gr.update(interactive=False), gr.update(interactive=True))
+    _btn_idle    = (gr.update(interactive=True),  gr.update(interactive=False))
+
+    if not _BATCH_LOCK.acquire(blocking=False):
+        yield ("⚠️ A batch run is already in progress. Wait for it to finish.\n",
+               gr.update(visible=False), *_btn_idle)
+        return
+
+    _BATCH_STOP_EVENT.clear()
+
+    result_jsonl = tempfile.mktemp(suffix=".jsonl", prefix="house_batch_")
+    log_q: "_queue.Queue[Optional[str]]" = _queue.Queue()
+
+    thread = threading.Thread(
+        target=_batch_worker,
+        args=(style, dataset, num_samples, device, rounds, latent_steps,
+              temperature, top_p, seed, result_jsonl, log_q),
+        daemon=True,
+    )
+    thread.start()
+
+    n_label = "all" if num_samples <= 0 else str(num_samples)
+    log = (
+        f"🚀 Batch evaluation started — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"   style={style} | dataset={dataset} | samples={n_label}\n"
+        f"   rounds={rounds} | latent_steps={latent_steps} | temperature={temperature}"
+        f" | top_p={top_p} | seed={seed} | version=v{_VERSION}\n"
+        f"{'='*70}\n"
+    )
+    yield log, gr.update(visible=False), *_btn_running
+
+    while True:
+        try:
+            item = log_q.get(timeout=1.0)
+        except _queue.Empty:
+            yield log, gr.update(visible=False), *_btn_running
+            continue
+        if item is None:
+            break
+        log += item
+        yield log, gr.update(visible=False), *_btn_running
+
+    thread.join()
+    _BATCH_LOCK.release()
+
+    was_stopped = _BATCH_STOP_EVENT.is_set()
+    if was_stopped:
+        summary = f"\n{'='*70}\n⏹ Stopped — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    else:
+        acc_matches = _re.findall(r"accuracy=([0-9]+(?:\.[0-9]+)?)%", log)
+        summary = f"\n{'='*70}\n✅ Batch complete — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        if acc_matches:
+            summary += f" | accuracy: {acc_matches[-1]}%"
+        summary += "\n"
+    log += summary
+
+    if not was_stopped and os.path.isfile(result_jsonl):
+        yield log, gr.update(value=result_jsonl, visible=True), *_btn_idle
+    else:
+        yield log, gr.update(visible=False), *_btn_idle
+
+
+# ── Model Manager backend ─────────────────────────────────────────────────────
+
+_DOWNLOAD_LOCK = threading.Lock()
+
+
+def _all_model_repos() -> List[Tuple[str, str, str]]:
+    """Return list of (style_name, role, repo_id) for all managed models."""
+    result = []
+    for style_name, spec in STYLE_SPECS.items():
+        for role, repo_id in spec["repos"].items():
+            result.append((style_name, role, str(repo_id)))
+    return result
+
+
+def _get_cached_repos() -> Dict[str, int]:
+    """Return {repo_id: size_bytes} for repos present in the local HF cache."""
+    try:
+        from huggingface_hub import scan_cache_dir
+        cache_info = scan_cache_dir()
+        return {r.repo_id: r.size_on_disk for r in cache_info.repos}
+    except Exception:
+        return {}
+
+
+def _build_model_catalog_data() -> List[List[str]]:
+    cached = _get_cached_repos()
+    rows = []
+    for style_name, role, repo_id in _all_model_repos():
+        if repo_id in cached:
+            b = cached[repo_id]
+            if b >= 1024 ** 3:
+                size_str = f"{b / 1024**3:.1f} GB"
+            elif b >= 1024 ** 2:
+                size_str = f"{b / 1024**2:.0f} MB"
+            else:
+                size_str = f"{b / 1024:.0f} KB"
+            status = "✅ cached"
+        else:
+            size_str = "—"
+            status = "☁️ not downloaded"
+        rows.append([style_name, role, repo_id, status, size_str])
+    return rows
+
+
+def _get_model_dropdown_choices(cached_only: bool) -> List[Tuple[str, Optional[str]]]:
+    """Return dropdown (label, value) pairs for cached or uncached models."""
+    cached = _get_cached_repos()
+    choices = [
+        (f"{style}/{role} — {repo_id}", repo_id)
+        for style, role, repo_id in _all_model_repos()
+        if (repo_id in cached) == cached_only
+    ]
+    if not choices:
+        label = "(all models are cached)" if not cached_only else "(no models cached locally)"
+        return [(label, None)]
+    return choices
+
+
+def _download_worker(repo_id: str, log_q: "_queue.Queue[Optional[str]]") -> None:
+    try:
+        from huggingface_hub import snapshot_download
+        log_q.put(f"📥 Downloading {repo_id} …\n")
+        local_path = snapshot_download(repo_id=repo_id)
+        log_q.put(f"✅ Done — cached at: {local_path}\n")
+    except Exception as exc:
+        log_q.put(f"❌ Download failed: {exc}\n")
+    finally:
+        log_q.put(None)  # sentinel
+
+
+def start_model_download(repo_id: Optional[str]):
+    """Gradio generator: download one model and stream progress."""
+    if not repo_id:
+        yield "⚠️ Select a model to download.", gr.update(), gr.update(), gr.update()
+        return
+
+    if not _DOWNLOAD_LOCK.acquire(blocking=False):
+        yield "⚠️ A download is already in progress. Please wait.", gr.update(), gr.update(), gr.update()
+        return
+
+    log_q: "_queue.Queue[Optional[str]]" = _queue.Queue()
+    thread = threading.Thread(target=_download_worker, args=(repo_id, log_q), daemon=True)
+    thread.start()
+
+    log = ""
+    try:
+        while True:
+            try:
+                item = log_q.get(timeout=2.0)
+            except _queue.Empty:
+                yield log, gr.update(), gr.update(), gr.update()
+                continue
+            if item is None:
+                break
+            log += item
+            yield log, gr.update(), gr.update(), gr.update()
+    finally:
+        thread.join()
+        _DOWNLOAD_LOCK.release()
+
+    new_data = _build_model_catalog_data()
+    dl_ch = _get_model_dropdown_choices(cached_only=False)
+    del_ch = _get_model_dropdown_choices(cached_only=True)
+    yield (
+        log,
+        gr.update(value=new_data),
+        gr.update(choices=dl_ch, value=None),
+        gr.update(choices=del_ch, value=None),
+    )
+
+
+def delete_local_model(repo_id: Optional[str]):
+    """Delete a locally cached model; returns (status, catalog, dl_dd, del_dd)."""
+    if not repo_id:
+        return "⚠️ Select a model to delete.", gr.update(), gr.update(), gr.update()
+    try:
+        from huggingface_hub import scan_cache_dir
+        cache_info = scan_cache_dir()
+        target = next((r for r in cache_info.repos if r.repo_id == repo_id), None)
+        if target is None:
+            msg = f"⚠️ `{repo_id}` not found in local cache."
+        else:
+            hashes = [rev.commit_hash for rev in target.revisions]
+            cache_info.delete_revisions(*hashes).execute()
+            msg = f"🗑️ Deleted `{repo_id}` ({len(hashes)} revision(s) removed)."
+    except Exception as exc:
+        msg = f"❌ Delete failed: {exc}"
+
+    new_data = _build_model_catalog_data()
+    dl_ch = _get_model_dropdown_choices(cached_only=False)
+    del_ch = _get_model_dropdown_choices(cached_only=True)
+    return msg, gr.update(value=new_data), gr.update(choices=dl_ch, value=None), gr.update(choices=del_ch, value=None)
+
+
 # ── Gradio layout ─────────────────────────────────────────────────────────────
+
 
 def build_ui() -> gr.Blocks:
     device_opts = ["cuda", "cpu"] if torch.cuda.is_available() else ["cpu"]
 
-    with gr.Blocks(title="RecursiveMAS") as demo:
+    _vram_note = (
+        "**Approx. VRAM**\n"
+        "- `sequential_light` ≈ 5 GB\n"
+        "- `sequential_scaled` ≈ 12 GB\n"
+        "- `mixture` ≈ 15 GB\n"
+        "- `distillation` ≈ 18 GB\n"
+        "- `deliberation` ≈ 12 GB"
+    )
+
+    with gr.Blocks(title=f"HOUSE — RecursiveMAS v{_VERSION}") as demo:
         gr.Markdown(
-            "# RecursiveMAS\n"
-            "Multi-agent reasoning via latent-space recursion.  \n"
-            "Models are loaded into VRAM on the first request and stay warm for subsequent ones."
+            f"# 🏥 HOUSE &nbsp;<sup style='font-size:0.5em;color:#888'>v{_VERSION}</sup>\n"
+            "### *Multi-agent diagnostic reasoning via latent-space recursion*\n"
+            "> Inspired by Dr. Gregory House — three specialist agents debate, refine, and solve.  \n"
+            "> Models load into VRAM on first request and stay warm for subsequent ones."
         )
 
-        with gr.Row():
-            # ── Settings panel ────────────────────────────────────────────
-            with gr.Column(scale=1, min_width=260):
-                gr.Markdown("### Settings")
-                style_dd = gr.Dropdown(
-                    choices=list(STYLE_SPECS.keys()),
-                    value="sequential_light",
-                    label="Collaboration style",
-                )
-                gr.Markdown(
-                    "> ℹ️ **First use:** model weights are downloaded from HuggingFace "
-                    "and cached locally. This may take several minutes depending on your connection. "
-                    "Subsequent runs and style switches load from cache instantly."
-                )
-                rounds_sl = gr.Slider(1, 5, value=3, step=1, label="Recursive rounds")
-                latent_sl = gr.Slider(8, 64, value=32, step=8, label="Latent steps")
-                device_dd = gr.Dropdown(choices=device_opts, value=device_opts[0], label="Device")
-                gr.Markdown(
-                    "**Approx. VRAM**\n"
-                    "- `sequential_light` ≈ 5 GB\n"
-                    "- `sequential_scaled` ≈ 12 GB\n"
-                    "- `mixture` ≈ 15 GB\n"
-                    "- `distillation` ≈ 18 GB\n"
-                    "- `deliberation` ≈ 12 GB"
-                )
+        with gr.Tabs():
 
-            # ── Chat panel ────────────────────────────────────────────────
-            with gr.Column(scale=3):
-                chatbot = gr.Chatbot(height=520, label="", show_label=False)
+            # ── Tab 1: Chat ───────────────────────────────────────────────
+            with gr.Tab("💬 Chat"):
                 with gr.Row():
-                    msg = gr.Textbox(
-                        placeholder="Ask a math, science, or reasoning question…",
-                        label="",
-                        lines=2,
-                        scale=5,
-                        show_label=False,
+                    with gr.Column(scale=1, min_width=260):
+                        gr.Markdown("### Settings")
+                        style_dd = gr.Dropdown(
+                            choices=list(STYLE_SPECS.keys()),
+                            value="sequential_light",
+                            label="Collaboration style",
+                        )
+                        domain_dd = gr.Dropdown(
+                            choices=list(DOMAIN_SYSTEM_PROMPTS.keys()),
+                            value="general",
+                            label="Reasoning domain",
+                        )
+                        gr.Markdown(
+                            "> ℹ️ **First use:** model weights are downloaded from HuggingFace "
+                            "and cached locally. This may take several minutes. "
+                            "Subsequent runs load from cache instantly."
+                        )
+                        rounds_sl = gr.Slider(1, 5, value=3, step=1, label="Recursive rounds")
+                        latent_sl = gr.Slider(8, 64, value=32, step=8, label="Latent steps")
+                        device_dd = gr.Dropdown(choices=device_opts, value=device_opts[0], label="Device")
+                        gr.Markdown(_vram_note)
+                        with gr.Accordion("Advanced settings", open=False):
+                            temperature_sl = gr.Slider(
+                                0.0, 1.0, value=0.6, step=0.05,
+                                label="Temperature",
+                                info="Higher = more creative, lower = more deterministic",
+                            )
+                            top_p_sl = gr.Slider(
+                                0.0, 1.0, value=0.95, step=0.05,
+                                label="Top-p (nucleus sampling)",
+                                info="Cumulative probability threshold for token selection",
+                            )
+                            seed_num = gr.Number(
+                                value=42, precision=0,
+                                label="Seed",
+                                info="Fixed seed for reproducible outputs (integer)",
+                            )
+
+                    with gr.Column(scale=3):
+                        chatbot = gr.Chatbot(height=520, label="", show_label=False)
+                        with gr.Row():
+                            msg = gr.Textbox(
+                                placeholder="Ask a math, science, or reasoning question…",
+                                label="", lines=2, scale=5, show_label=False,
+                            )
+                            send_btn = gr.Button("Send", variant="primary", scale=1)
+                        gr.Button("Clear").click(lambda: ([], []), outputs=[chatbot, gr.State([])])
+
+                state = gr.State([])
+                for trigger in (send_btn.click, msg.submit):
+                    trigger(
+                        respond,
+                        inputs=[
+                            msg, state, style_dd, domain_dd,
+                            rounds_sl, latent_sl, device_dd,
+                            temperature_sl, top_p_sl, seed_num,
+                        ],
+                        outputs=[chatbot, state, msg],
                     )
-                    send_btn = gr.Button("Send", variant="primary", scale=1)
-                gr.Button("Clear").click(lambda: ([], []), outputs=[chatbot, gr.State([])])
 
-        state = gr.State([])
+            # ── Tab 2: Batch Evaluation ───────────────────────────────────
+            with gr.Tab("📊 Batch Evaluation"):
+                gr.Markdown(
+                    "### Run a full benchmark evaluation\n"
+                    "The pipeline processes every question in the selected dataset and streams "
+                    "live progress below. Results are saved to a JSONL file available for download "
+                    "when the run completes."
+                )
+                with gr.Row():
+                    # ── Batch settings ────────────────────────────────────
+                    with gr.Column(scale=1, min_width=260):
+                        b_style_dd = gr.Dropdown(
+                            choices=list(STYLE_SPECS.keys()),
+                            value="sequential_light",
+                            label="Collaboration style",
+                        )
+                        b_dataset_dd = gr.Dropdown(
+                            choices=_BATCH_DATASETS,
+                            value="math500",
+                            label="Dataset",
+                        )
+                        b_samples_num = gr.Number(
+                            value=-1, precision=0,
+                            label="N samples (−1 = full benchmark)",
+                            info="Positive integer to evaluate a random subset",
+                        )
+                        b_device_dd = gr.Dropdown(choices=device_opts, value=device_opts[0], label="Device")
+                        b_rounds_sl = gr.Slider(1, 5, value=3, step=1, label="Recursive rounds")
+                        b_latent_sl = gr.Slider(8, 64, value=32, step=8, label="Latent steps")
+                        gr.Markdown(_vram_note)
+                        with gr.Accordion("Advanced settings", open=False):
+                            b_temp_sl = gr.Slider(
+                                0.0, 1.0, value=0.6, step=0.05,
+                                label="Temperature",
+                                info="Higher = more creative, lower = more deterministic",
+                            )
+                            b_topp_sl = gr.Slider(
+                                0.0, 1.0, value=0.95, step=0.05,
+                                label="Top-p (nucleus sampling)",
+                                info="Cumulative probability threshold for token selection",
+                            )
+                            b_seed_num = gr.Number(
+                                value=42, precision=0,
+                                label="Seed",
+                                info="Fixed seed for reproducible outputs",
+                            )
+                        with gr.Row():
+                            run_btn = gr.Button("▶ Run Batch", variant="primary", scale=2)
+                            stop_btn = gr.Button("⏹ Stop", variant="stop", scale=1,
+                                                 interactive=False)
 
-        for trigger in (send_btn.click, msg.submit):
-            trigger(
-                respond,
-                inputs=[msg, state, style_dd, rounds_sl, latent_sl, device_dd],
-                outputs=[chatbot, state, msg],
-            )
+                    # ── Batch output ──────────────────────────────────────
+                    with gr.Column(scale=3):
+                        batch_log = gr.Code(
+                            label="Progress log",
+                            language=None,
+                            lines=30,
+                            interactive=False,
+                        )
+                        dl_file = gr.File(
+                            label="⬇ Download results (JSONL)",
+                            visible=False,
+                            interactive=False,
+                        )
+
+                run_btn.click(
+                    run_batch_eval,
+                    inputs=[
+                        b_style_dd, b_dataset_dd, b_samples_num, b_device_dd,
+                        b_rounds_sl, b_latent_sl, b_temp_sl, b_topp_sl, b_seed_num,
+                    ],
+                    outputs=[batch_log, dl_file, run_btn, stop_btn],
+                )
+                stop_btn.click(stop_batch_eval)
+
+            # ── Tab 3: Model Manager ──────────────────────────────────────
+            with gr.Tab("📦 Model Manager"):
+                gr.Markdown(
+                    "### Model catalog\n"
+                    "All models the system can manage, with their local cache status. "
+                    "Use the controls below to download or delete individual models."
+                )
+
+                mm_refresh_btn = gr.Button("🔄 Refresh", variant="secondary", size="sm")
+
+                mm_catalog_df = gr.Dataframe(
+                    headers=["Style", "Role", "Repository", "Status", "Size"],
+                    value=_build_model_catalog_data(),
+                    interactive=False,
+                    wrap=True,
+                )
+
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        gr.Markdown("#### ⬇ Download model")
+                        gr.Markdown(
+                            "> One download at a time. Large models can take several minutes. "
+                            "Progress is streamed below."
+                        )
+                        mm_dl_dd = gr.Dropdown(
+                            choices=_get_model_dropdown_choices(cached_only=False),
+                            label="Model to download",
+                            info="Models not yet cached locally",
+                            value=None,
+                        )
+                        mm_dl_btn = gr.Button("⬇ Download", variant="primary")
+                        mm_dl_log = gr.Code(
+                            label="Download log", language=None, lines=6, interactive=False
+                        )
+
+                    with gr.Column(scale=1):
+                        gr.Markdown("#### 🗑 Delete model")
+                        gr.Markdown(
+                            "> Removes all local revisions for the selected model. "
+                            "Weights can be re-downloaded at any time."
+                        )
+                        mm_del_dd = gr.Dropdown(
+                            choices=_get_model_dropdown_choices(cached_only=True),
+                            label="Model to delete",
+                            info="Locally cached models",
+                            value=None,
+                        )
+                        mm_del_btn = gr.Button("🗑 Delete", variant="stop")
+                        mm_del_status = gr.Textbox(
+                            label="Status", interactive=False, lines=2
+                        )
+
+                def _mm_refresh():
+                    new_data = _build_model_catalog_data()
+                    dl_ch = _get_model_dropdown_choices(cached_only=False)
+                    del_ch = _get_model_dropdown_choices(cached_only=True)
+                    return (
+                        gr.update(value=new_data),
+                        gr.update(choices=dl_ch, value=None),
+                        gr.update(choices=del_ch, value=None),
+                    )
+
+                mm_refresh_btn.click(
+                    _mm_refresh,
+                    outputs=[mm_catalog_df, mm_dl_dd, mm_del_dd],
+                )
+
+                mm_dl_btn.click(
+                    start_model_download,
+                    inputs=[mm_dl_dd],
+                    outputs=[mm_dl_log, mm_catalog_df, mm_dl_dd, mm_del_dd],
+                )
+
+                mm_del_btn.click(
+                    delete_local_model,
+                    inputs=[mm_del_dd],
+                    outputs=[mm_del_status, mm_catalog_df, mm_dl_dd, mm_del_dd],
+                )
 
     return demo
 

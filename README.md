@@ -19,6 +19,7 @@ Scaling agent collaboration through latent-space recursion.
     <a href="https://www.linkedin.com/posts/jiaruzou_recursivemas-recurisvelearning-multiagentsystems-ugcPost-7455645681341493248-ioLJ/?utm_source=share&utm_medium=member_desktop&rcm=ACoAADc5TzgBN_tNOuzpi7kE7n6dZ0y13EkxZOs"><img src="https://img.shields.io/badge/LinkedIn-Coverage-0A66C2.svg?logo=linkedin&logoColor=white" alt="LinkedIn Coverage"></a>
     <a href="https://x.com/Jiaru_Zou/status/2049551828296389118"><img src="https://img.shields.io/badge/Twitter-Coverage-1DA1F2.svg?logo=x" alt="Twitter Coverage"></a>
     <a href="https://venturebeat.com/ai/how-recursivemas-speeds-up-multi-agent-inference-by-2-4x-and-reduces-token-usage-by-75"><img src="https://img.shields.io/badge/Venture-Beat-EE1C25.svg?labelColor=111111&color=EE1C25&logo=venturebeat&logoColor=white" alt="VentureBeat Coverage"></a>
+    <a href="https://github.com/danielesalpietro/RecursiveMAS/blob/feature/domain-system-prompts/VERSION"><img src="https://img.shields.io/badge/HOUSE-v1.1.1-4CAF50.svg" alt="HOUSE Version"></a>
 </p>
 
 
@@ -27,6 +28,8 @@ Scaling agent collaboration through latent-space recursion.
 </p>
 
 ## 📰 News
+
+**[2026.05.29]** **HOUSE v1.1.1** — Gradio web UI rebrand with Chat and Batch Evaluation modes, domain-specific agent prompts, advanced inference controls, full run metadata, and evaluation parser bias fixes. See [Changelog](#-changelog) for details.
 
 **[2026.05.24]** Check out the [VentureBeat article](https://t.co/KSQwBwpC4W) featuring our research on RecursiveMAS!
 
@@ -50,6 +53,12 @@ Scaling agent collaboration through latent-space recursion.
 ✅ Release All Collaboration Patterns (Sequential, Mixture, Deliberation, Distillation).
 
 ✅ Release Demo Code for Inference (Commands Provided Below).
+
+✅ Gradio Web UI (**HOUSE**) with interactive Chat and researcher-grade Batch Evaluation modes.
+
+✅ Docker GPU + CPU support with 3-level health checks.
+
+✅ Domain-specific agent prompts (general, medical, software engineering, scientific research).
 
 ☑️ Add Complete Inference Pipeline Across All Downstreams.
 
@@ -94,7 +103,11 @@ TAVILY_API_KEY=your_tavily_api_key_here
 
 ### Step 1 — Configure secrets
 
-Create a `.env` file in the project root (**never commit this file**):
+Copy the provided template and fill in your keys (**never commit `.env`**):
+
+```bash
+cp .env.example .env
+```
 
 ```env
 HF_TOKEN=hf_your_token_here
@@ -117,7 +130,7 @@ docker compose up recursivemas
 
 Models are downloaded from Hugging Face on first run and persisted in the `hf_cache` Docker volume — subsequent runs start immediately.
 
-### Step 4 — Launch the Gradio web UI
+### Step 4 — Launch the HOUSE web UI
 
 ```bash
 docker compose up serve
@@ -126,7 +139,7 @@ docker compose up serve
 Open [http://localhost:7860](http://localhost:7860). The UI exposes all 5 collaboration styles. Models are loaded into VRAM on the first request and stay warm for subsequent ones — no reload between questions.
 
 <p align="center">
-  <img src="assets/webui.png" width="90%" alt="RecursiveMAS Gradio Web UI">
+  <img src="assets/webui.png" width="90%" alt="HOUSE — RecursiveMAS Web UI">
 </p>
 
 ---
@@ -222,6 +235,84 @@ docker run --rm -p 7860:7860 `
 
 ---
 
+## 🏥 HOUSE Web UI
+
+**HOUSE** (*Heuristic Orchestration Using Specialist Ensembles*) is the interactive front-end for RecursiveMAS, named in homage to Dr. Gregory House M.D. Three specialist agents — Planner, Critic/Refiner, and Solver — debate, challenge, and converge on an answer through latent-space recursion.
+
+The UI is versioned via the `VERSION` file at the project root (`major.minor.patch`). Current release: **v1.1.1**.
+
+### 💬 Chat Mode
+
+Ask any single question in natural language. The pipeline runs end-to-end and returns:
+
+- **Answer** — the parsed final answer
+- **Solver output** — the full reasoning chain from Agent 3
+- **Planner / Critic outputs** — collapsible sections showing intermediate agent reasoning
+- **Run info** — a full metadata table attached to every reply (see below)
+
+### 📊 Batch Evaluation Mode
+
+Run a complete benchmark evaluation as researchers do — select a dataset, configure the pipeline, press **▶ Run Batch**, and watch live progress stream to the log panel. When the run completes, a **⬇ Download results (JSONL)** button appears with one record per question.
+
+| Dataset | Questions | Domain |
+|---------|-----------|--------|
+| `math500` | 500 | Mathematics (MATH benchmark) |
+| `medqa` | ~1,200 | Medical QA (USMLE-style) |
+| `gpqa` | 448 | Graduate-level science (GPQA Diamond) |
+| `mbppplus` | 378 | Python code generation |
+
+Only one batch run can execute at a time. The Chat tab displays a warning if a batch is in progress.
+
+### ⚙️ Settings Reference
+
+| Setting | Tab | Default | Notes |
+|---------|-----|---------|-------|
+| Collaboration style | Both | `sequential_light` | One of 5 styles |
+| Reasoning domain | Chat | `general` | See domain prompts below |
+| Recursive rounds | Both | 3 | 1–5 |
+| Latent steps | Both | 32 | 8–64, step 8 |
+| Device | Both | `cuda` / `cpu` | Auto-detected |
+| Temperature *(advanced)* | Both | 0.6 | 0.0–1.0 |
+| Top-p *(advanced)* | Both | 0.95 | 0.0–1.0 |
+| Seed *(advanced)* | Both | 42 | Integer, for reproducibility |
+| N samples *(batch only)* | Batch | −1 | −1 = full benchmark |
+
+### 🧾 Run Metadata
+
+Every chat reply includes a collapsible **Run info** table with all parameters used, start/end timestamps, and elapsed time — making every result fully reproducible:
+
+```
+| Parameter        | Value             |
+|------------------|-------------------|
+| Version          | v1.1.1            |
+| Style            | sequential_light  |
+| Domain           | medical_emergency |
+| Recursive rounds | 3                 |
+| Latent steps     | 32                |
+| Temperature      | 0.6               |
+| Top-p            | 0.95              |
+| Seed             | 42                |
+| Device           | cuda              |
+| Started          | 2026-05-29 17:12:54 |
+| Finished         | 2026-05-29 17:13:09 |
+| Elapsed          | 0:00:15           |
+```
+
+### 🌐 Domain-Specific Agent Prompts
+
+The **Reasoning domain** dropdown activates role-specific system prompts for each agent, replacing the default general-purpose instructions:
+
+| Domain | Planner | Critic / Refiner | Solver |
+|--------|---------|-----------------|--------|
+| `general` | General reasoning | General reasoning | General reasoning |
+| `medical_emergency` | Trauma Senior Physician | Critical Care specialist | Emergency Surgeon |
+| `software_engineering` | Senior Software Architect | Senior Code Reviewer | Senior Engineer |
+| `scientific_research` | Principal Investigator | Peer Reviewer | Science Communicator |
+
+Domain context is propagated via thread-local storage so it reaches every `render_chat_prompt` call inside the inference pipeline without modifying the pipeline API.
+
+---
+
 ## 💥 Quick Start
 
 ### 🤖 Load Model Checkpoints
@@ -308,26 +399,29 @@ The current repository is organized as follows:
 ```text
 RecursiveMAS/
 ├── README.md
+├── VERSION                         # semantic version (major.minor.patch)
 ├── __init__.py
 ├── run.py                          # unified CLI entry point for batch inference
-├── serve.py                        # Gradio web UI (all 5 styles, warm model cache)
+├── serve.py                        # HOUSE web UI (Chat + Batch Evaluation tabs)
 ├── healthcheck.py                  # 3-level container health check
 ├── load_from_repo.py
 ├── hf_resolver.py
 ├── modeling.py
 ├── system_loader.py
-├── prompts.py
+├── prompts.py                      # system prompts + domain-specific agent roles
 ├── requirements.txt
 ├── requirements-serve.txt          # extra deps for serve.py (gradio)
 ├── Dockerfile                      # batch inference image
-├── Dockerfile.serve                # web UI image
+├── Dockerfile.serve                # HOUSE web UI image
 ├── docker-compose.yml              # orchestrates both services + shared hf_cache volume
 ├── .dockerignore
+├── .env.example                    # template — copy to .env and fill in keys
+├── serve-cpu.bat                   # Windows one-click CPU launch (no GPU required)
 ├── assets/
 ├── dataset/
 └── inference_utils/
     ├── __init__.py
-    ├── answer_utils.py
+    ├── answer_utils.py             # answer parsing + evaluation comparison
     ├── lcb_utils.py
     ├── reflector_tool_notes.py
     ├── inference_mas.py
@@ -339,11 +433,12 @@ RecursiveMAS/
 The key components are:
 
 - `run.py`: the unified entry point for running RecursiveMAS inference.
+- `serve.py`: the HOUSE Gradio web UI with Chat and Batch Evaluation tabs.
 - `load_from_repo.py`: maps each MAS style to our released Hugging Face checkpoints and dataset defaults.
 - `hf_resolver.py`: resolves and load the Hugging Face checkpoints.
 - `modeling.py`: implements RecursiveLink modules.
 - `system_loader.py`: provides a high-level API for loading a full released multi-agent system.
-- `prompts.py`: stores prompts for different MAS collaboration styles.
+- `prompts.py`: system prompts and domain-specific agent role definitions.
 - `inference_utils/`: contains inference pipelines and evaluation utilities for different MAS structures.
 
 ### ⚙️ Running RecursiveMAS at Different Scales
@@ -379,6 +474,48 @@ python run.py --style distillation --batch_size 16 --temperature 0.6 --top_p 0.9
 python run.py --style deliberation --batch_size 16 --temperature 0.6 --top_p 0.95 --dataset math500 --seed 42 --trust_remote_code 1 --device cuda
 ```
 
+---
+
+## 📋 Changelog
+
+### v1.1.1 — 2026-05-29
+
+#### 🏥 HOUSE Web UI (`serve.py`)
+
+- **HOUSE branding** — project renamed HOUSE (*Heuristic Orchestration Using Specialist Ensembles*), inspired by Dr. Gregory House M.D. Version displayed in browser tab and header, driven by the `VERSION` file.
+- **Two-tab layout** — Chat tab for interactive single-question use; Batch Evaluation tab for full benchmark runs.
+- **Batch Evaluation tab** — dataset selector (`math500`, `medqa`, `gpqa`, `mbppplus`), N samples field (−1 = full benchmark), live streaming progress log, and a download button for the result JSONL when the run completes.
+- **Run metadata** — every chat reply includes a collapsible table with all parameters used (style, domain, rounds, latent steps, temperature, top-p, seed, device, version, start/end timestamps, elapsed time).
+- **Advanced settings accordion** — temperature, top-p, and seed are now exposed in the UI (previously hardcoded), making all inference parameters fully configurable and reproducible.
+- **Concurrent-run guard** — a threading lock prevents two batch runs from executing simultaneously; the Chat tab displays a warning if a batch is in progress.
+- **Warm model cache** — models stay loaded in VRAM between requests; style switches evict and reload automatically.
+
+#### 🌐 Domain-Specific Agent Prompts (`prompts.py`, `inference_utils/inference_mas.py`)
+
+- Four reasoning domains added: `general`, `medical_emergency`, `software_engineering`, `scientific_research`.
+- Each domain provides role-specific system prompts for Planner, Refiner, and Solver agents.
+- Domain context is propagated via thread-local storage (`threading.local`) — zero changes to the pipeline API.
+- Agent role aliases (`agent1` → `planner`, `agent2` → `refiner`, `agent3` → `solver`) resolved correctly at every `render_chat_prompt` call site.
+
+#### 🐛 Evaluation Parser Bias Fixes (`inference_utils/answer_utils.py`, `inference_utils/inference_mas.py`)
+
+Three systematic evaluation bugs were identified and fixed:
+
+1. **`compare_answers()` cascading A-default** — `default="A"` was passed for both pred and gold, causing parse failures on either side to be silently scored as correct when gold happened to be A. Now uses `default=None`; `correct=False` whenever either side cannot be parsed.
+2. **`extract_gold_answer()` silent A-default** — unparseable gold answers for choice datasets silently became `"A"`, skewing the gold distribution. Now returns `None` on failure.
+3. **Latent solver output heuristic** — `run_solver_latent_stage()` used `max_new_tokens` to discriminate prompt-prefixed vs generation-only outputs; unreliable when the model generates very short answers (e.g., just `\boxed{B}`). Switched to `prompt_len` as the discriminator.
+
+#### 🐳 Docker & Infrastructure
+
+- `Dockerfile` and `Dockerfile.serve` with CUDA 12.4 + cuDNN runtime base image.
+- `docker-compose.yml` with two services (`recursivemas` batch, `serve` web UI) sharing a `hf_cache` named volume.
+- `healthcheck.py` — 3-level check: Python deps + 5 styles (L1), CUDA + tensor allocation (L2), HuggingFace Hub reachability (L3).
+- `.env.example` template; `.env` added to `.gitignore` to prevent secret exposure.
+- `serve-cpu.bat` for Windows users without GPU passthrough configured.
+- `docker-compose.override.yml` pattern documented for CPU-only testing.
+
+---
+
 ## 🙏 Acknowledgements
 
 This project is built upon the excellent open-source community. We sincerely thank the developers and maintainers of the following libraries and resources:
@@ -409,3 +546,4 @@ We welcome discussions and contributions to RecursiveMAS. If you would like to s
       url={https://arxiv.org/abs/2604.25917}, 
 }
 ```
+

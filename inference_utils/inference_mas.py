@@ -50,6 +50,7 @@ from prompts import (
     PLANNER_SLOT,
     REFINED_SLOT,
     SYSTEM_PROMPT,
+    get_active_system_prompt,
     build_code_planner_prompt,
     build_code_planner_prompt_with_feedback_slot,
     build_code_refiner_prompt,
@@ -455,9 +456,9 @@ def _normalize_template_ids(tokenizer, value, max_length: Optional[int] = None) 
     raise ValueError(f"Unsupported chat template output type for ids: {type(value)}")
 
 
-def render_chat_prompt(tokenizer, user_prompt: str, enable_thinking: bool) -> str:
+def render_chat_prompt(tokenizer, user_prompt: str, enable_thinking: bool, role: str = "solver") -> str:
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": get_active_system_prompt(role)},
         {"role": "user", "content": user_prompt},
     ]
     rendered = apply_chat_template(
@@ -470,9 +471,9 @@ def render_chat_prompt(tokenizer, user_prompt: str, enable_thinking: bool) -> st
     return _normalize_template_text(tokenizer, rendered)
 
 
-def render_chat_prompt_ids(tokenizer, user_prompt: str, enable_thinking: bool) -> List[int]:
+def render_chat_prompt_ids(tokenizer, user_prompt: str, enable_thinking: bool, role: str = "planner") -> List[int]:
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": get_active_system_prompt(role)},
         {"role": "user", "content": user_prompt},
     ]
     rendered = apply_chat_template(
@@ -490,8 +491,9 @@ def split_prompt_ids_by_slots(
     user_prompt_with_slots: str,
     slot_texts: Sequence[str],
     enable_thinking: bool,
+    role: str = "refiner",
 ) -> List[List[int]]:
-    full_text = render_chat_prompt(tokenizer, user_prompt_with_slots, enable_thinking)
+    full_text = render_chat_prompt(tokenizer, user_prompt_with_slots, enable_thinking, role=role)
     segments_text: List[str] = []
     cursor = 0
     for slot_text in slot_texts:
@@ -907,7 +909,7 @@ def run_text_generation_stage(
         trust_remote_code=trust_remote_code,
         agent_name=stage_name,
     )
-    rendered_prompts = [render_chat_prompt(tokenizer, p, enable_thinking) for p in user_prompts]
+    rendered_prompts = [render_chat_prompt(tokenizer, p, enable_thinking, role=stage_name) for p in user_prompts]
     gen_kwargs = build_generation_kwargs(
         tokenizer,
         max_new_tokens=max_new_tokens,
@@ -1112,6 +1114,7 @@ def run_refiner_latent_stage(
                 user_prompt,
                 [PLANNER_SLOT],
                 enable_thinking,
+                role="refiner",
             )
         )
 
@@ -1235,6 +1238,7 @@ def run_solver_feedback_latent_stage(
                 user_prompt,
                 [REFINED_SLOT],
                 enable_thinking,
+                role="solver",
             )
         )
 
@@ -1355,6 +1359,7 @@ def run_planner_feedback_latent_stage(
                 user_prompt,
                 [FEEDBACK_SLOT],
                 enable_thinking,
+                role="planner",
             )
         )
 
@@ -1454,6 +1459,7 @@ def run_solver_latent_stage(
                 user_prompt,
                 [REFINED_SLOT],
                 enable_thinking,
+                role="solver",
             )
         )
 
@@ -1510,8 +1516,10 @@ def run_solver_latent_stage(
         prompt_len = attention_mask.size(1)
         # `inputs_embeds` generation return format differs across model families:
         # some return continuation-only, others return prompt+continuation.
-        # Use max_new_tokens as a robust discriminator to avoid truncating outputs.
-        if sequences.size(1) > max_new_tokens:
+        # Discriminate by prompt_len: if the output is longer than the prompt it
+        # must include the prompt prefix, so slice it off. max_new_tokens is an
+        # unreliable discriminator when the model generates very short answers.
+        if sequences.size(1) > prompt_len:
             gen_ids = sequences[:, prompt_len:]
         else:
             gen_ids = sequences
@@ -1626,7 +1634,7 @@ def render_inputs_for_logging(
             trust_remote_code=trust_remote_code,
             agent_name=f"{agent_name}-log",
         )
-        rendered = [render_chat_prompt(tokenizer, prompt, enable_thinking) for prompt in user_prompts]
+        rendered = [render_chat_prompt(tokenizer, prompt, enable_thinking, role=agent_name) for prompt in user_prompts]
         return rendered
     except Exception as exc:
         print(
