@@ -561,24 +561,42 @@ def _get_cached_repos() -> Dict[str, int]:
         return {}
 
 
+def _fmt_size(b: int) -> str:
+    if b >= 1024 ** 3:
+        return f"{b / 1024**3:.1f} GB"
+    if b >= 1024 ** 2:
+        return f"{b / 1024**2:.0f} MB"
+    return f"{b / 1024:.0f} KB"
+
+
 def _build_model_catalog_data() -> List[List]:
     cached = _get_cached_repos()
     rows = []
     for style_name, role, repo_id in _all_model_repos():
         if repo_id in cached:
-            b = cached[repo_id]
-            if b >= 1024 ** 3:
-                size_str = f"{b / 1024**3:.1f} GB"
-            elif b >= 1024 ** 2:
-                size_str = f"{b / 1024**2:.0f} MB"
-            else:
-                size_str = f"{b / 1024:.0f} KB"
             status = "✅ cached"
+            size_str = _fmt_size(cached[repo_id])
         else:
-            size_str = "—"
             status = "☁️ not downloaded"
+            size_str = "—"
         rows.append([False, style_name, role, repo_id, status, size_str])
     return rows
+
+
+def _fetch_remote_info(repo_id: str) -> Tuple[Optional[str], Optional[int]]:
+    """Query HF Hub for latest commit SHA and total expected size (network call)."""
+    try:
+        from huggingface_hub import model_info as _hf_model_info, list_repo_tree as _hf_list_tree
+        info = _hf_model_info(repo_id)
+        remote_sha: Optional[str] = info.sha
+        total = sum(
+            getattr(f, "size", None) or 0
+            for f in _hf_list_tree(repo_id, recursive=True, repo_type="model")
+            if hasattr(f, "size")
+        )
+        return remote_sha, total if total > 0 else None
+    except Exception:
+        return None, None
 
 
 def _download_worker(repo_id: str, log_q: "_queue.Queue[Optional[str]]") -> None:
@@ -594,12 +612,11 @@ def _download_worker(repo_id: str, log_q: "_queue.Queue[Optional[str]]") -> None
 
 
 def _mm_run_action(action: Optional[str], df_data):
-    """Gradio generator: run Download or Delete on all checked rows, one at a time."""
+    """Gradio generator: run selected action on all checked rows, one at a time."""
     if not action:
         yield "⚠️ Choose an action from the dropdown.", gr.update()
         return
 
-    # df_data may be a pandas DataFrame or list-of-lists depending on Gradio version
     try:
         import pandas as _pd
         rows = df_data.values.tolist() if isinstance(df_data, _pd.DataFrame) else (df_data or [])
@@ -616,11 +633,12 @@ def _mm_run_action(action: Optional[str], df_data):
         yield "⚠️ No models selected — tick the checkboxes first.", gr.update()
         return
 
-    is_download = "Download" in action
-    log = f"{'⬇ Downloading' if is_download else '🗑 Deleting'} {len(selected)} model(s)…\n\n"
-    yield log, gr.update()
+    # ── Download / Update ─────────────────────────────────────────────────────
+    if "Download" in action or "Update" in action:
+        verb = "Updating" if "Update" in action else "Downloading"
+        log = f"⬇ {verb} {len(selected)} model(s)…\n\n"
+        yield log, gr.update()
 
-    if is_download:
         if not _DOWNLOAD_LOCK.acquire(blocking=False):
             yield log + "⚠️ Another download is already running.", gr.update()
             return
@@ -642,7 +660,88 @@ def _mm_run_action(action: Optional[str], df_data):
                 t.join()
         finally:
             _DOWNLOAD_LOCK.release()
-    else:
+
+        log += "\n✅ Done.\n"
+        yield log, gr.update(value=_build_model_catalog_data())
+        return
+
+    # ── Check ─────────────────────────────────────────────────────────────────
+    if "Check" in action:
+        log = f"🔍 Checking {len(selected)} model(s) against HF Hub…\n\n"
+        yield log, gr.update()
+
+        try:
+            from huggingface_hub import scan_cache_dir
+            cached_map = {r.repo_id: r for r in scan_cache_dir().repos}
+        except Exception:
+            cached_map = {}
+
+        # Mutable copy of the current table; we'll patch Status/Size inline
+        current_rows = [list(r) for r in rows]
+        row_by_repo = {r[3]: r for r in current_rows}
+
+        for repo_id in selected:
+            log += f"· {repo_id}\n"
+            yield log, current_rows
+
+            remote_sha, remote_size = _fetch_remote_info(repo_id)
+            row = row_by_repo.get(repo_id)
+
+            if remote_sha is None:
+                log += "  ❌ Could not reach HF Hub\n"
+                if row:
+                    row[4] = "❌ check failed"
+                yield log, current_rows
+                continue
+
+            if repo_id not in cached_map:
+                log += "  ☁️ Not cached locally\n"
+                if row:
+                    row[4] = "☁️ not downloaded"
+                yield log, current_rows
+                continue
+
+            local_repo = cached_map[repo_id]
+            local_size = local_repo.size_on_disk
+
+            local_sha: Optional[str] = None
+            if local_repo.revisions:
+                try:
+                    latest = max(local_repo.revisions, key=lambda rv: rv.last_modified)
+                except Exception:
+                    latest = next(iter(local_repo.revisions))
+                local_sha = latest.commit_hash
+
+            if remote_size and local_size < remote_size * 0.85:
+                pct = local_size / remote_size * 100
+                msg = f"⚠️ incomplete ({pct:.0f}% of {_fmt_size(remote_size)})"
+                log += f"  {msg}\n"
+                if row:
+                    row[4] = msg
+                    row[5] = f"{_fmt_size(local_size)} / {_fmt_size(remote_size)}"
+            elif local_sha and remote_sha and local_sha != remote_sha:
+                msg = f"🔄 update available ({local_sha[:7]}→{remote_sha[:7]})"
+                log += f"  {msg}\n"
+                if row:
+                    row[4] = msg
+            else:
+                short = local_sha[:7] if local_sha else "?"
+                msg = f"✅ up to date ({short})"
+                log += f"  {msg}\n"
+                if row:
+                    row[4] = msg
+
+            yield log, current_rows
+
+        log += "\n✅ Check complete.\n"
+        yield log, current_rows
+        return
+
+    # ── Delete ────────────────────────────────────────────────────────────────
+    if "Delete" in action:
+        log = f"🗑 Deleting {len(selected)} model(s)…\n\n"
+        yield log, gr.update()
+
         for repo_id in selected:
             try:
                 from huggingface_hub import scan_cache_dir
@@ -658,8 +757,8 @@ def _mm_run_action(action: Optional[str], df_data):
                 log += f"❌ Failed `{repo_id}`: {exc}\n"
             yield log, gr.update()
 
-    log += "\n✅ Done.\n"
-    yield log, gr.update(value=_build_model_catalog_data())
+        log += "\n✅ Done.\n"
+        yield log, gr.update(value=_build_model_catalog_data())
 
 
 # ── Gradio layout ─────────────────────────────────────────────────────────────
@@ -838,11 +937,11 @@ def build_ui() -> gr.Blocks:
                     mm_sel_all_btn  = gr.Button("☑ Select All",    size="sm")
                     mm_desel_all_btn = gr.Button("☐ Deselect All", size="sm")
                     mm_action_dd = gr.Dropdown(
-                        choices=["⬇ Download", "🗑 Delete"],
+                        choices=["⬇ Download", "🔄 Update", "🔍 Check", "🗑 Delete"],
                         value=None,
                         label="Action",
                         scale=2,
-                        min_width=150,
+                        min_width=180,
                     )
                     mm_run_btn = gr.Button("▶ Run", variant="primary", scale=1)
 
