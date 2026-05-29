@@ -346,7 +346,12 @@ def respond(
 # ── Batch evaluation backend ──────────────────────────────────────────────────
 
 _BATCH_LOCK = threading.Lock()   # prevents concurrent batch runs
+_BATCH_STOP_EVENT = threading.Event()  # set to request cooperative stop
 _BATCH_DATASETS = ["math500", "medqa", "gpqa", "mbppplus"]
+
+
+class _BatchStopped(Exception):
+    pass
 
 # inference_mas.py defaults dataset_split to "test", but build_common_cli in
 # run.py overrides it with "" (empty), which HuggingFace rejects.  Map each
@@ -361,11 +366,17 @@ _DATASET_SPLITS: Dict[str, str] = {
 
 
 class _QueueWriter:
-    """Redirect stdout from the inference thread into a Queue."""
+    """Redirect stdout from the inference thread into a Queue.
+
+    Checks _BATCH_STOP_EVENT on every write so that clicking Stop
+    terminates the batch at the next print call inside the pipeline.
+    """
     def __init__(self, q: "_queue.Queue[Optional[str]]") -> None:
         self._q = q
 
     def write(self, s: str) -> None:
+        if _BATCH_STOP_EVENT.is_set():
+            raise _BatchStopped()
         if s:
             self._q.put(s)
 
@@ -431,6 +442,9 @@ def _batch_worker(
             with contextlib.redirect_stdout(_QueueWriter(log_q)):
                 module.main()
             log_q.put(None)  # sentinel: success
+        except _BatchStopped:
+            log_q.put("\n⏹ Batch stopped by user.\n")
+            log_q.put(None)
         except Exception as exc:
             log_q.put(f"\n❌ Runtime error: {exc}\n")
             log_q.put(None)
@@ -440,6 +454,11 @@ def _batch_worker(
     except Exception as exc:
         log_q.put(f"\n❌ Setup error: {exc}\n")
         log_q.put(None)
+
+
+def stop_batch_eval() -> None:
+    """Signal the running batch worker to stop at its next print call."""
+    _BATCH_STOP_EVENT.set()
 
 
 def run_batch_eval(
@@ -453,12 +472,18 @@ def run_batch_eval(
     top_p: float,
     seed: int,
 ):
-    """Gradio generator: streams log lines and yields (log_text, file_component)."""
+    """Gradio generator: streams log lines and yields (log_text, file, run_btn, stop_btn)."""
     import re as _re
 
+    _btn_running = (gr.update(interactive=False), gr.update(interactive=True))
+    _btn_idle    = (gr.update(interactive=True),  gr.update(interactive=False))
+
     if not _BATCH_LOCK.acquire(blocking=False):
-        yield "⚠️ A batch run is already in progress. Wait for it to finish.\n", gr.update(visible=False)
+        yield ("⚠️ A batch run is already in progress. Wait for it to finish.\n",
+               gr.update(visible=False), *_btn_idle)
         return
+
+    _BATCH_STOP_EVENT.clear()
 
     result_jsonl = tempfile.mktemp(suffix=".jsonl", prefix="house_batch_")
     log_q: "_queue.Queue[Optional[str]]" = _queue.Queue()
@@ -479,33 +504,37 @@ def run_batch_eval(
         f" | top_p={top_p} | seed={seed} | version=v{_VERSION}\n"
         f"{'='*70}\n"
     )
-    yield log, gr.update(visible=False)
+    yield log, gr.update(visible=False), *_btn_running
 
     while True:
         try:
             item = log_q.get(timeout=1.0)
         except _queue.Empty:
-            yield log, gr.update(visible=False)
+            yield log, gr.update(visible=False), *_btn_running
             continue
         if item is None:
             break
         log += item
-        yield log, gr.update(visible=False)
+        yield log, gr.update(visible=False), *_btn_running
 
     thread.join()
     _BATCH_LOCK.release()
 
-    acc_matches = _re.findall(r"accuracy=([0-9]+(?:\.[0-9]+)?)%", log)
-    summary = f"\n{'='*70}\n✅ Batch complete — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    if acc_matches:
-        summary += f" | accuracy: {acc_matches[-1]}%"
-    summary += "\n"
+    was_stopped = _BATCH_STOP_EVENT.is_set()
+    if was_stopped:
+        summary = f"\n{'='*70}\n⏹ Stopped — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    else:
+        acc_matches = _re.findall(r"accuracy=([0-9]+(?:\.[0-9]+)?)%", log)
+        summary = f"\n{'='*70}\n✅ Batch complete — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        if acc_matches:
+            summary += f" | accuracy: {acc_matches[-1]}%"
+        summary += "\n"
     log += summary
 
-    if os.path.isfile(result_jsonl):
-        yield log, gr.update(value=result_jsonl, visible=True)
+    if not was_stopped and os.path.isfile(result_jsonl):
+        yield log, gr.update(value=result_jsonl, visible=True), *_btn_idle
     else:
-        yield log, gr.update(visible=False)
+        yield log, gr.update(visible=False), *_btn_idle
 
 
 # ── Gradio layout ─────────────────────────────────────────────────────────────
@@ -642,7 +671,10 @@ def build_ui() -> gr.Blocks:
                                 label="Seed",
                                 info="Fixed seed for reproducible outputs",
                             )
-                        run_btn = gr.Button("▶ Run Batch", variant="primary")
+                        with gr.Row():
+                            run_btn = gr.Button("▶ Run Batch", variant="primary", scale=2)
+                            stop_btn = gr.Button("⏹ Stop", variant="stop", scale=1,
+                                                 interactive=False)
 
                     # ── Batch output ──────────────────────────────────────
                     with gr.Column(scale=3):
@@ -664,8 +696,9 @@ def build_ui() -> gr.Blocks:
                         b_style_dd, b_dataset_dd, b_samples_num, b_device_dd,
                         b_rounds_sl, b_latent_sl, b_temp_sl, b_topp_sl, b_seed_num,
                     ],
-                    outputs=[batch_log, dl_file],
+                    outputs=[batch_log, dl_file, run_btn, stop_btn],
                 )
+                stop_btn.click(stop_batch_eval)
 
     return demo
 
