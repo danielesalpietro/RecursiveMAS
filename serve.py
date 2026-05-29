@@ -537,6 +537,140 @@ def run_batch_eval(
         yield log, gr.update(visible=False), *_btn_idle
 
 
+# ── Model Manager backend ─────────────────────────────────────────────────────
+
+_DOWNLOAD_LOCK = threading.Lock()
+
+
+def _all_model_repos() -> List[Tuple[str, str, str]]:
+    """Return list of (style_name, role, repo_id) for all managed models."""
+    result = []
+    for style_name, spec in STYLE_SPECS.items():
+        for role, repo_id in spec["repos"].items():
+            result.append((style_name, role, str(repo_id)))
+    return result
+
+
+def _get_cached_repos() -> Dict[str, int]:
+    """Return {repo_id: size_bytes} for repos present in the local HF cache."""
+    try:
+        from huggingface_hub import scan_cache_dir
+        cache_info = scan_cache_dir()
+        return {r.repo_id: r.size_on_disk for r in cache_info.repos}
+    except Exception:
+        return {}
+
+
+def _build_model_catalog_data() -> List[List[str]]:
+    cached = _get_cached_repos()
+    rows = []
+    for style_name, role, repo_id in _all_model_repos():
+        if repo_id in cached:
+            b = cached[repo_id]
+            if b >= 1024 ** 3:
+                size_str = f"{b / 1024**3:.1f} GB"
+            elif b >= 1024 ** 2:
+                size_str = f"{b / 1024**2:.0f} MB"
+            else:
+                size_str = f"{b / 1024:.0f} KB"
+            status = "✅ cached"
+        else:
+            size_str = "—"
+            status = "☁️ not downloaded"
+        rows.append([style_name, role, repo_id, status, size_str])
+    return rows
+
+
+def _get_model_dropdown_choices(cached_only: bool) -> List[Tuple[str, Optional[str]]]:
+    """Return dropdown (label, value) pairs for cached or uncached models."""
+    cached = _get_cached_repos()
+    choices = [
+        (f"{style}/{role} — {repo_id}", repo_id)
+        for style, role, repo_id in _all_model_repos()
+        if (repo_id in cached) == cached_only
+    ]
+    if not choices:
+        label = "(all models are cached)" if not cached_only else "(no models cached locally)"
+        return [(label, None)]
+    return choices
+
+
+def _download_worker(repo_id: str, log_q: "_queue.Queue[Optional[str]]") -> None:
+    try:
+        from huggingface_hub import snapshot_download
+        log_q.put(f"📥 Downloading {repo_id} …\n")
+        local_path = snapshot_download(repo_id=repo_id)
+        log_q.put(f"✅ Done — cached at: {local_path}\n")
+    except Exception as exc:
+        log_q.put(f"❌ Download failed: {exc}\n")
+    finally:
+        log_q.put(None)  # sentinel
+
+
+def start_model_download(repo_id: Optional[str]):
+    """Gradio generator: download one model and stream progress."""
+    if not repo_id:
+        yield "⚠️ Select a model to download.", gr.update(), gr.update(), gr.update()
+        return
+
+    if not _DOWNLOAD_LOCK.acquire(blocking=False):
+        yield "⚠️ A download is already in progress. Please wait.", gr.update(), gr.update(), gr.update()
+        return
+
+    log_q: "_queue.Queue[Optional[str]]" = _queue.Queue()
+    thread = threading.Thread(target=_download_worker, args=(repo_id, log_q), daemon=True)
+    thread.start()
+
+    log = ""
+    try:
+        while True:
+            try:
+                item = log_q.get(timeout=2.0)
+            except _queue.Empty:
+                yield log, gr.update(), gr.update(), gr.update()
+                continue
+            if item is None:
+                break
+            log += item
+            yield log, gr.update(), gr.update(), gr.update()
+    finally:
+        thread.join()
+        _DOWNLOAD_LOCK.release()
+
+    new_data = _build_model_catalog_data()
+    dl_ch = _get_model_dropdown_choices(cached_only=False)
+    del_ch = _get_model_dropdown_choices(cached_only=True)
+    yield (
+        log,
+        gr.update(value=new_data),
+        gr.update(choices=dl_ch, value=None),
+        gr.update(choices=del_ch, value=None),
+    )
+
+
+def delete_local_model(repo_id: Optional[str]):
+    """Delete a locally cached model; returns (status, catalog, dl_dd, del_dd)."""
+    if not repo_id:
+        return "⚠️ Select a model to delete.", gr.update(), gr.update(), gr.update()
+    try:
+        from huggingface_hub import scan_cache_dir
+        cache_info = scan_cache_dir()
+        target = next((r for r in cache_info.repos if r.repo_id == repo_id), None)
+        if target is None:
+            msg = f"⚠️ `{repo_id}` not found in local cache."
+        else:
+            hashes = [rev.commit_hash for rev in target.revisions]
+            cache_info.delete_revisions(*hashes).execute()
+            msg = f"🗑️ Deleted `{repo_id}` ({len(hashes)} revision(s) removed)."
+    except Exception as exc:
+        msg = f"❌ Delete failed: {exc}"
+
+    new_data = _build_model_catalog_data()
+    dl_ch = _get_model_dropdown_choices(cached_only=False)
+    del_ch = _get_model_dropdown_choices(cached_only=True)
+    return msg, gr.update(value=new_data), gr.update(choices=dl_ch, value=None), gr.update(choices=del_ch, value=None)
+
+
 # ── Gradio layout ─────────────────────────────────────────────────────────────
 
 
@@ -699,6 +833,85 @@ def build_ui() -> gr.Blocks:
                     outputs=[batch_log, dl_file, run_btn, stop_btn],
                 )
                 stop_btn.click(stop_batch_eval)
+
+            # ── Tab 3: Model Manager ──────────────────────────────────────
+            with gr.Tab("📦 Model Manager"):
+                gr.Markdown(
+                    "### Model catalog\n"
+                    "All models the system can manage, with their local cache status. "
+                    "Use the controls below to download or delete individual models."
+                )
+
+                mm_refresh_btn = gr.Button("🔄 Refresh", variant="secondary", size="sm")
+
+                mm_catalog_df = gr.Dataframe(
+                    headers=["Style", "Role", "Repository", "Status", "Size"],
+                    value=_build_model_catalog_data(),
+                    interactive=False,
+                    wrap=True,
+                )
+
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        gr.Markdown("#### ⬇ Download model")
+                        gr.Markdown(
+                            "> One download at a time. Large models can take several minutes. "
+                            "Progress is streamed below."
+                        )
+                        mm_dl_dd = gr.Dropdown(
+                            choices=_get_model_dropdown_choices(cached_only=False),
+                            label="Model to download",
+                            info="Models not yet cached locally",
+                            value=None,
+                        )
+                        mm_dl_btn = gr.Button("⬇ Download", variant="primary")
+                        mm_dl_log = gr.Code(
+                            label="Download log", language=None, lines=6, interactive=False
+                        )
+
+                    with gr.Column(scale=1):
+                        gr.Markdown("#### 🗑 Delete model")
+                        gr.Markdown(
+                            "> Removes all local revisions for the selected model. "
+                            "Weights can be re-downloaded at any time."
+                        )
+                        mm_del_dd = gr.Dropdown(
+                            choices=_get_model_dropdown_choices(cached_only=True),
+                            label="Model to delete",
+                            info="Locally cached models",
+                            value=None,
+                        )
+                        mm_del_btn = gr.Button("🗑 Delete", variant="stop")
+                        mm_del_status = gr.Textbox(
+                            label="Status", interactive=False, lines=2
+                        )
+
+                def _mm_refresh():
+                    new_data = _build_model_catalog_data()
+                    dl_ch = _get_model_dropdown_choices(cached_only=False)
+                    del_ch = _get_model_dropdown_choices(cached_only=True)
+                    return (
+                        gr.update(value=new_data),
+                        gr.update(choices=dl_ch, value=None),
+                        gr.update(choices=del_ch, value=None),
+                    )
+
+                mm_refresh_btn.click(
+                    _mm_refresh,
+                    outputs=[mm_catalog_df, mm_dl_dd, mm_del_dd],
+                )
+
+                mm_dl_btn.click(
+                    start_model_download,
+                    inputs=[mm_dl_dd],
+                    outputs=[mm_dl_log, mm_catalog_df, mm_dl_dd, mm_del_dd],
+                )
+
+                mm_del_btn.click(
+                    delete_local_model,
+                    inputs=[mm_del_dd],
+                    outputs=[mm_del_status, mm_catalog_df, mm_dl_dd, mm_del_dd],
+                )
 
     return demo
 
