@@ -761,6 +761,169 @@ def _mm_run_action(action: Optional[str], df_data):
         yield log, gr.update(value=_build_model_catalog_data())
 
 
+# ── Architecture descriptions ─────────────────────────────────────────────────
+
+_STYLE_DESCRIPTIONS: Dict[str, str] = {
+    "sequential_light": (
+        "**Planner → Critic → Solver** via latent recursion (~5 GB VRAM).  \n"
+        "Lightweight pipeline — ideal for math and step-by-step reasoning."
+    ),
+    "sequential_scaled": (
+        "**Planner → Critic → Solver** with larger models (~12 GB VRAM).  \n"
+        "Same pipeline as Light but higher accuracy on complex tasks."
+    ),
+    "mixture": (
+        "**Math + Code + Science specialists → Summarizer** in parallel (~15 GB VRAM).  \n"
+        "Best for questions that span multiple domains."
+    ),
+    "distillation": (
+        "**Expert → Learner** with bidirectional latent feedback (~18 GB VRAM).  \n"
+        "Strong knowledge transfer for hard reasoning problems."
+    ),
+    "deliberation": (
+        "**Reflector → Toolcaller + external tools** (~12 GB VRAM).  \n"
+        "Best for tasks that benefit from web search or code execution."
+    ),
+}
+
+_ARCH_HTML = """
+<style>
+  .aw{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:8px 4px}
+  .ab{margin-bottom:28px}
+  .ab h3{margin:0 0 5px;font-size:1.1em;color:#1a1a2e}
+  .ad{color:#555;font-size:.88em;margin:0 0 10px;line-height:1.5}
+  .pl{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:6px}
+  .ag{background:#e8f4fd;border:2px solid #2196F3;border-radius:8px;padding:7px 12px;text-align:center;min-width:100px}
+  .ag .m{font-size:.72em;color:#777}
+  .ag .r{font-weight:700;color:#1565C0;font-size:.9em}
+  .ag.ex{background:#e8f5e9;border-color:#4CAF50}
+  .ag.ex .r{color:#2e7d32}
+  .ag.sp{background:#f3e5f5;border-color:#9C27B0}
+  .ag.sp .r{color:#6a1b9a}
+  .ag.out{background:#fff8e1;border:2px solid #FFC107}
+  .ag.out .r{color:#e65100}
+  .rl{background:#fff3e0;border:2px dashed #FF9800;border-radius:6px;padding:3px 8px;
+      font-size:.72em;color:#bf360c;white-space:nowrap;font-weight:700}
+  .ar{font-size:1.3em;color:#bbb}
+  .fb{font-size:.78em;color:#999;font-style:italic;margin-top:3px}
+  .pg{display:flex;flex-direction:column;gap:6px}
+  .rg{display:flex;flex-direction:column;gap:6px;align-items:center;justify-content:center}
+  .tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+  .tag{background:#f0f0f0;border-radius:12px;padding:2px 9px;font-size:.76em;color:#555}
+  hr.s{border:none;border-top:1px solid #eee;margin:22px 0}
+  .legend{font-size:.77em;color:#aaa;margin-top:14px;line-height:1.6}
+</style>
+
+<div class="aw">
+
+<!-- Sequential Light -->
+<div class="ab">
+  <h3>🔗 Sequential Light</h3>
+  <p class="ad">A lightweight 3-agent pipeline. The <b>Planner</b> outlines a strategy, the <b>Critic</b>
+  reviews and refines it, and the <b>Solver</b> produces the final answer — all via latent-space tensors,
+  never text. In multi-round mode the Solver's latent feeds back to the Planner.</p>
+  <div class="pl">
+    <div class="ag"><div class="m">Qwen3-1.7B</div><div class="r">Planner</div></div>
+    <span class="rl">→ RL →</span>
+    <div class="ag"><div class="m">Llama3.2-1B</div><div class="r">Critic</div></div>
+    <span class="rl">→ RL →</span>
+    <div class="ag"><div class="m">Qwen2.5-Math-1.5B</div><div class="r">Solver</div></div>
+    <span class="ar">→</span>
+    <div class="ag out"><div class="m">&nbsp;</div><div class="r">Answer</div></div>
+  </div>
+  <div class="fb">↺ multi-round: Solver latent → RL → Planner (next round)</div>
+  <div class="tags"><span class="tag">≈ 5 GB VRAM</span><span class="tag">Math · Reasoning</span><span class="tag">~3.2B total params</span></div>
+</div>
+<hr class="s">
+
+<!-- Sequential Scaled -->
+<div class="ab">
+  <h3>🔗 Sequential Scaled</h3>
+  <p class="ad">Same pipeline architecture as Sequential Light, but with larger models for higher accuracy at the cost of more VRAM.</p>
+  <div class="pl">
+    <div class="ag"><div class="m">Gemma3-4B</div><div class="r">Planner</div></div>
+    <span class="rl">→ RL →</span>
+    <div class="ag"><div class="m">Llama3.2-3B</div><div class="r">Critic</div></div>
+    <span class="rl">→ RL →</span>
+    <div class="ag"><div class="m">Qwen3.5-4B</div><div class="r">Solver</div></div>
+    <span class="ar">→</span>
+    <div class="ag out"><div class="m">&nbsp;</div><div class="r">Answer</div></div>
+  </div>
+  <div class="fb">↺ multi-round: Solver latent → RL → Planner (next round)</div>
+  <div class="tags"><span class="tag">≈ 12 GB VRAM</span><span class="tag">Math · Complex reasoning</span><span class="tag">~11B total params</span></div>
+</div>
+<hr class="s">
+
+<!-- Mixture -->
+<div class="ab">
+  <h3>🌐 Mixture</h3>
+  <p class="ad">Three domain specialists run <em>in parallel</em>. Each produces a latent embedding of its
+  analysis; the <b>Summarizer</b> receives all three simultaneously and synthesises the final answer.
+  In multi-round mode the Summarizer sends individual feedback latents back to each specialist.</p>
+  <div class="pl">
+    <div class="pg">
+      <div class="ag sp"><div class="m">DeepSeek-R1-Qwen-1.5B</div><div class="r">Math</div></div>
+      <div class="ag sp"><div class="m">Qwen2.5-Coder-3B</div><div class="r">Code</div></div>
+      <div class="ag sp"><div class="m">BioMistral-7B</div><div class="r">Science</div></div>
+    </div>
+    <div class="rg">
+      <span class="rl">→ RL →</span>
+      <span class="rl">→ RL →</span>
+      <span class="rl">→ RL →</span>
+    </div>
+    <div class="ag ex"><div class="m">Qwen3.5-2B</div><div class="r">Summarizer</div></div>
+    <span class="ar">→</span>
+    <div class="ag out"><div class="m">&nbsp;</div><div class="r">Answer</div></div>
+  </div>
+  <div class="fb">↺ multi-round: Summarizer latent → RL → each Specialist (next round)</div>
+  <div class="tags"><span class="tag">≈ 15 GB VRAM</span><span class="tag">Multi-domain · Science · Code</span><span class="tag">~13.5B total params</span></div>
+</div>
+<hr class="s">
+
+<!-- Distillation -->
+<div class="ab">
+  <h3>🎓 Distillation</h3>
+  <p class="ad">The <b>Expert</b> reasons deeply and transmits a compressed latent representation to the
+  <b>Learner</b>, which produces the final answer. In multi-round mode the Learner feeds a latent signal
+  back to the Expert, enabling iterative knowledge transfer in both directions.</p>
+  <div class="pl">
+    <div class="ag ex"><div class="m">Qwen3.5-9B</div><div class="r">Expert</div></div>
+    <span class="rl">→ RL_el →</span>
+    <div class="ag"><div class="m">Qwen3.5-4B</div><div class="r">Learner</div></div>
+    <span class="ar">→</span>
+    <div class="ag out"><div class="m">&nbsp;</div><div class="r">Answer</div></div>
+  </div>
+  <div class="fb">↺ multi-round: Learner latent → RL_le → Expert (next round)</div>
+  <div class="tags"><span class="tag">≈ 18 GB VRAM</span><span class="tag">Knowledge transfer · Hard reasoning</span><span class="tag">~13B total params</span></div>
+</div>
+<hr class="s">
+
+<!-- Deliberation -->
+<div class="ab">
+  <h3>🔭 Deliberation</h3>
+  <p class="ad">The <b>Reflector</b> analyses the problem and passes a latent signal to the <b>Toolcaller</b>,
+  which can invoke external tools (web search, Python interpreter) before producing the final answer.
+  In multi-round mode the Toolcaller's state feeds back to the Reflector.</p>
+  <div class="pl">
+    <div class="ag"><div class="m">Qwen3.5-4B</div><div class="r">Reflector</div></div>
+    <span class="rl">→ RL_rt →</span>
+    <div class="ag sp"><div class="m">Qwen3.5-4B</div><div class="r">Toolcaller</div></div>
+    <span class="ar">→</span>
+    <div class="ag out"><div class="m">🌐 🐍</div><div class="r">Tools + Answer</div></div>
+  </div>
+  <div class="fb">↺ multi-round: Toolcaller latent → RL_tr → Reflector (next round)</div>
+  <div class="tags"><span class="tag">≈ 12 GB VRAM</span><span class="tag">Tool use · Web search · Code exec</span><span class="tag">~8B total params</span></div>
+</div>
+
+<div class="legend">
+  <b>RL</b> = RecursiveLink — a small trained adapter (MLP) that transforms hidden-state tensors between
+  different model architectures. All inter-agent communication within a round happens entirely in latent
+  space; no text is exchanged between agents.
+</div>
+
+</div>
+"""
+
 # ── Gradio layout ─────────────────────────────────────────────────────────────
 
 
@@ -795,6 +958,12 @@ def build_ui() -> gr.Blocks:
                             choices=list(STYLE_SPECS.keys()),
                             value="sequential_light",
                             label="Collaboration style",
+                        )
+                        style_info = gr.Markdown(
+                            _STYLE_DESCRIPTIONS["sequential_light"],
+                        )
+                        gr.Markdown(
+                            "<small>ℹ️ See the <b>📐 Architectures</b> tab for pipeline diagrams.</small>"
                         )
                         domain_dd = gr.Dropdown(
                             choices=list(DOMAIN_SYSTEM_PROMPTS.keys()),
@@ -848,6 +1017,11 @@ def build_ui() -> gr.Blocks:
                         ],
                         outputs=[chatbot, state, msg],
                     )
+                style_dd.change(
+                    lambda s: _STYLE_DESCRIPTIONS.get(s, ""),
+                    inputs=[style_dd],
+                    outputs=[style_info],
+                )
 
             # ── Tab 2: Batch Evaluation ───────────────────────────────────
             with gr.Tab("📊 Batch Evaluation"):
@@ -979,6 +1153,16 @@ def build_ui() -> gr.Blocks:
                     inputs=[mm_action_dd, mm_catalog_df],
                     outputs=[mm_log, mm_catalog_df],
                 )
+
+            # ── Tab 4: Architectures ──────────────────────────────────────
+            with gr.Tab("📐 Architectures"):
+                gr.Markdown(
+                    "### Collaboration style — pipeline diagrams\n"
+                    "Each style defines a different multi-agent topology. "
+                    "Agents communicate exclusively through **latent-space tensors** "
+                    "via trained **RecursiveLink (RL)** adapters — no text is exchanged between agents within a round."
+                )
+                gr.HTML(_ARCH_HTML)
 
     return demo
 
