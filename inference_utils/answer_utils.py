@@ -253,11 +253,10 @@ def extract_gsm8k_gold_answer(text: str) -> str:
     return text.strip()
 
 
-def extract_gold_answer(text: str, dataset_name: str) -> str:
+def extract_gold_answer(text: str, dataset_name: str) -> Optional[str]:
     text = _ensure_text(text)
     if is_choice_dataset(dataset_name):
-        choice = extract_choice_answer(text, default=None)
-        return choice if choice is not None else "A"
+        return extract_choice_answer(text, default=None)  # None on failure, never "A"
     if _is_gsm8k_dataset(dataset_name):
         return extract_gsm8k_gold_answer(text)
     return text.strip()
@@ -407,17 +406,22 @@ def compare_answers(
     gold_answer = extract_gold_answer(gold_text, dataset_name)
 
     if is_choice_dataset(dataset_name):
-        # Per request, default to choice A if parsing fails, then override when parsed.
-        pred_answer = extract_choice_answer(pred_text, default="A")
-        gold_choice = extract_choice_answer(gold_answer, default="A")
-        pred_choice = extract_choice_answer(pred_answer, default="A")
-        correct = bool(gold_choice == pred_choice)
+        # Use default=None so that a parse failure scores as incorrect, not as "A".
+        pred_choice = extract_choice_answer(pred_text, default=None)
+        gold_choice = extract_choice_answer(gold_answer or "", default=None)
+        correct = (
+            gold_choice is not None
+            and pred_choice is not None
+            and gold_choice == pred_choice
+        )
+        gold_norm = f"choice:{gold_choice.lower()}" if gold_choice else ""
+        pred_norm = f"choice:{pred_choice.lower()}" if pred_choice else ""
         return (
-            gold_choice,
+            gold_choice or "",
             pred_choice,
             correct,
-            f"choice:{gold_choice.lower()}",
-            f"choice:{pred_choice.lower()}",
+            gold_norm,
+            pred_norm,
         )
 
     if _is_math500_dataset(dataset_name):

@@ -1516,8 +1516,10 @@ def run_solver_latent_stage(
         prompt_len = attention_mask.size(1)
         # `inputs_embeds` generation return format differs across model families:
         # some return continuation-only, others return prompt+continuation.
-        # Use max_new_tokens as a robust discriminator to avoid truncating outputs.
-        if sequences.size(1) > max_new_tokens:
+        # Discriminate by prompt_len: if the output is longer than the prompt it
+        # must include the prompt prefix, so slice it off. max_new_tokens is an
+        # unreliable discriminator when the model generates very short answers.
+        if sequences.size(1) > prompt_len:
             gen_ids = sequences[:, prompt_len:]
         else:
             gen_ids = sequences
