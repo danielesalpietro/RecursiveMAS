@@ -92,10 +92,18 @@ def get_active_domain() -> str:
     return getattr(_mas_ctx, "domain", "general")
 
 
+_ROLE_ALIASES = {
+    "agent1": "planner",
+    "agent2": "refiner",
+    "agent3": "solver",
+}
+
+
 def get_active_system_prompt(role: str = "solver") -> str:
     """Return the domain-specific system prompt for the given agent role."""
     domain = get_active_domain()
     role_key = role.lower().split("-")[0]  # "solver-feedback" → "solver"
+    role_key = _ROLE_ALIASES.get(role_key, role_key)
     return DOMAIN_SYSTEM_PROMPTS.get(domain, {}).get(role_key, SYSTEM_PROMPT)
 
 

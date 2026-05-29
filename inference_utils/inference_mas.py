@@ -1632,7 +1632,7 @@ def render_inputs_for_logging(
             trust_remote_code=trust_remote_code,
             agent_name=f"{agent_name}-log",
         )
-        rendered = [render_chat_prompt(tokenizer, prompt, enable_thinking) for prompt in user_prompts]
+        rendered = [render_chat_prompt(tokenizer, prompt, enable_thinking, role=agent_name) for prompt in user_prompts]
         return rendered
     except Exception as exc:
         print(
