@@ -30,6 +30,7 @@ from datasets import load_dataset
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from . import _token_counter as _tc
 from .answer_utils import (
     compare_answers,
     ensure_choice_instruction,
@@ -942,6 +943,7 @@ def run_text_generation_stage(
 
         prompt_len = batch_inputs["input_ids"].size(1)
         gen_ids = generated[:, prompt_len:]
+        _tc.add(prompt_len * len(batch_prompts), gen_ids.numel())
         batch_texts = tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
         outputs.extend([text.strip() for text in batch_texts])
 
@@ -1523,6 +1525,7 @@ def run_solver_latent_stage(
             gen_ids = sequences[:, prompt_len:]
         else:
             gen_ids = sequences
+        _tc.add(prompt_len * len(embed_seqs), gen_ids.numel())
         batch_texts = tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
         outputs.extend([text.strip() for text in batch_texts])
 
@@ -1609,6 +1612,7 @@ def run_answer_retry_stage(
 
         prompt_len = batch_inputs["input_ids"].size(1)
         gen_ids = generated[:, prompt_len:]
+        _tc.add(prompt_len * len(batch_prompts), gen_ids.numel())
         batch_suffix = tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
         for local_i, suffix in enumerate(batch_suffix):
             global_i = pending_indices[start + local_i]
@@ -1828,6 +1832,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    _tc.reset()
     args = parse_args()
     args.method = "ours_recursive"
     global _GEN_TOP_K, _GEN_MIN_P, _GEN_REPETITION_PENALTY
@@ -3217,6 +3222,8 @@ def main() -> None:
             }
             f.write(json.dumps(summary_record, ensure_ascii=False) + "\n")
         print(f"[jsonl] wrote {len(sample_records)} sample records to {result_jsonl_path}")
+    _p, _g = _tc.get()
+    print(f"[tokens] prompt={_p} generated={_g} total={_p + _g}")
 
 if __name__ == "__main__":
     main()

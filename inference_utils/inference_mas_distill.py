@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import torch
 from tqdm import tqdm
 
+from . import _token_counter as _tc
 from . import inference_mas as base
 from .lcb_utils import (
     clean_raw_output,
@@ -389,6 +390,7 @@ def run_distill_learner_text_stage(
         sequences = generated.sequences if hasattr(generated, "sequences") else generated
         prompt_len = attention_mask.size(1)
         gen_ids = sequences[:, prompt_len:] if sequences.size(1) > max_new_tokens else sequences
+        _tc.add(prompt_len * len(embed_seqs), gen_ids.numel())
         batch_texts = tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
         outputs.extend([text.strip() for text in batch_texts])
 
@@ -493,6 +495,7 @@ def run_distill_learner_feedback_latent_stage(
 
 
 def main() -> None:
+    _tc.reset()
     args = parse_args()
     args.method = "ours_recursive"
     base._GEN_TOP_K = int(args.top_k) if int(args.top_k) >= 0 else None
@@ -998,6 +1001,8 @@ def main() -> None:
             }
             f.write(json.dumps(summary_record, ensure_ascii=False) + "\n")
         print(f"[jsonl] wrote {len(sample_records)} sample records to {result_jsonl_path}")
+    _p, _g = _tc.get()
+    print(f"[tokens] prompt={_p} generated={_g} total={_p + _g}")
 
 
 if __name__ == "__main__":

@@ -15,6 +15,7 @@ import torch
 from tqdm import tqdm
 from transformers import StoppingCriteria, StoppingCriteriaList
 
+from . import _token_counter as _tc
 from . import inference_mas as base
 from .lcb_utils import (
     clean_raw_output,
@@ -617,6 +618,7 @@ def generate_batch_from_embeds(
         )
     sequences = generated.sequences if hasattr(generated, "sequences") else generated
     gen_ids = sequences[:, input_length:] if sequences.size(1) > max_new_tokens else sequences
+    _tc.add(input_length * gen_ids.size(0), gen_ids.numel())
 
     texts: List[str] = []
     finished: List[bool] = []
@@ -667,6 +669,7 @@ def generate_batch_from_text_prompts(
         )
     sequences = generated.sequences if hasattr(generated, "sequences") else generated
     gen_ids = sequences[:, input_length:]
+    _tc.add(input_length * gen_ids.size(0), gen_ids.numel())
 
     texts: List[str] = []
     finished: List[bool] = []
@@ -1080,6 +1083,7 @@ def run_toolcaller_text_from_latent_stage(
 
 
 def main() -> None:
+    _tc.reset()
     args = parse_args()
     args.method = "ours_recursive"
     base._GEN_TOP_K = int(args.top_k) if int(args.top_k) >= 0 else None
@@ -1597,6 +1601,8 @@ def main() -> None:
             }
             f.write(json.dumps(summary_record, ensure_ascii=False) + "\n")
         print(f"[jsonl] wrote {len(sample_records)} sample records to {result_jsonl_path}")
+    _p, _g = _tc.get()
+    print(f"[tokens] prompt={_p} generated={_g} total={_p + _g}")
 
 
 if __name__ == "__main__":

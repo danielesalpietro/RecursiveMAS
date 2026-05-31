@@ -206,6 +206,15 @@ def _run_single_question(
                 pass
 
 
+def _parse_token_stats(stdout: str) -> Optional[Dict[str, int]]:
+    """Parse the [tokens] line emitted by each inference module's main()."""
+    import re as _re
+    m = _re.search(r"\[tokens\] prompt=(\d+) generated=(\d+) total=(\d+)", stdout)
+    if not m:
+        return None
+    return {"prompt": int(m.group(1)), "generated": int(m.group(2)), "total": int(m.group(3))}
+
+
 def _parse_agent_outputs(stdout: str) -> Dict[str, str]:
     """Extract Agent1 / Agent2 / Agent3 text outputs from captured stdout."""
     # The pipeline prints labelled sections like "3) Agent1 Output:" etc.
@@ -272,6 +281,11 @@ def _build_reply(
             )
 
     if run_info:
+        _tok = run_info.get("tokens")
+        _tok_str = (
+            f"prompt: {_tok['prompt']:,} · generated: {_tok['generated']:,} · total: {_tok['total']:,}"
+            if _tok else "—"
+        )
         info = (
             f"| Parameter | Value |\n"
             f"|-----------|-------|\n"
@@ -286,7 +300,8 @@ def _build_reply(
             f"| Device | `{run_info['device']}` |\n"
             f"| Started | {run_info['started']} |\n"
             f"| Finished | {run_info['finished']} |\n"
-            f"| Elapsed | {run_info['elapsed']} |"
+            f"| Elapsed | {run_info['elapsed']} |\n"
+            f"| Tokens | {_tok_str} |"
         )
         parts.append(f"\n<details><summary>Run info</summary>\n\n{info}\n\n</details>")
 
@@ -335,6 +350,7 @@ def respond(
         )
         t_end = datetime.now()
         elapsed = str(t_end - t_start).split(".")[0]  # HH:MM:SS
+        token_stats = _parse_token_stats(stdout)
         run_info = {
             "version": _VERSION,
             "style": style,
@@ -348,6 +364,7 @@ def respond(
             "started": t_start.strftime("%Y-%m-%d %H:%M:%S"),
             "finished": t_end.strftime("%Y-%m-%d %H:%M:%S"),
             "elapsed": elapsed,
+            "tokens": token_stats,
         }
         reply = _build_reply(style, parsed, stdout, run_info)
     except Exception as exc:
