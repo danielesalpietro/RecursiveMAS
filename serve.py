@@ -1277,6 +1277,9 @@ def _postprocess_with_llm(
         if backend == "anthropic":
             import anthropic as _ant
             key = api_key.strip() or os.environ.get("ANTHROPIC_API_KEY", "")
+            if not key or key == "sk-ant-your-key-here":
+                _log_write("[postproc] anthropic skipped — ANTHROPIC_API_KEY not configured\n")
+                return None
             client = _ant.Anthropic(api_key=key)
             msg = client.messages.create(
                 model=model.strip() or "claude-haiku-4-5-20251001",
@@ -1288,17 +1291,30 @@ def _postprocess_with_llm(
         if backend == "gemini":
             import google.generativeai as _genai  # type: ignore
             key = api_key.strip() or os.environ.get("GEMINI_API_KEY", "")
+            if not key or key == "AIza-your-key-here":
+                _log_write("[postproc] gemini skipped — GEMINI_API_KEY not configured\n")
+                return None
             _genai.configure(api_key=key)
             m = _genai.GenerativeModel(model.strip() or "gemini-2.0-flash")
             return m.generate_content(prompt).text
 
         if backend == "openai_compat":
             from openai import OpenAI as _OAI  # type: ignore
+            # Local servers typically don't require a real key
             key = api_key.strip() or os.environ.get("OPENAI_API_KEY", "none")
-            base = endpoint.strip() or "http://localhost:8000/v1"
+            base = (
+                endpoint.strip()
+                or os.environ.get("OPENAI_COMPAT_ENDPOINT", "")
+                or "http://localhost:8000/v1"
+            )
+            mdl = (
+                model.strip()
+                or os.environ.get("OPENAI_COMPAT_MODEL", "")
+                or "default"
+            )
             client = _OAI(api_key=key, base_url=base)
             resp = client.chat.completions.create(
-                model=model.strip() or "default",
+                model=mdl,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=2048,
             )
@@ -1391,11 +1407,25 @@ def build_ui() -> gr.Blocks:
                             )
 
                         with gr.Accordion("🤖 Post-processing LLM", open=False):
+                            # Detect which backends are pre-configured via .env
+                            _pp_configured = {
+                                "anthropic":    bool(os.environ.get("ANTHROPIC_API_KEY", "").strip()),
+                                "gemini":       bool(os.environ.get("GEMINI_API_KEY", "").strip()),
+                                "openai_compat": bool(os.environ.get("OPENAI_COMPAT_ENDPOINT", "").strip()),
+                            }
+                            _pp_status_lines = [
+                                f"{'✅' if _pp_configured['anthropic']    else '⚪'} Claude (Anthropic) — "
+                                f"{'key loaded from `.env`' if _pp_configured['anthropic'] else 'set `ANTHROPIC_API_KEY` in `.env`'}",
+                                f"{'✅' if _pp_configured['gemini']       else '⚪'} Gemini — "
+                                f"{'key loaded from `.env`' if _pp_configured['gemini'] else 'set `GEMINI_API_KEY` in `.env`'}",
+                                f"{'✅' if _pp_configured['openai_compat'] else '⚪'} OpenAI-compatible — "
+                                f"{'endpoint loaded from `.env`' if _pp_configured['openai_compat'] else 'set `OPENAI_COMPAT_ENDPOINT` in `.env` or enter below'}",
+                            ]
                             gr.Markdown(
                                 "Pipe the MAS output through an external LLM for a cleaner, "
-                                "synthesized response.  \n"
-                                "API keys can also be set in `.env` "
-                                "(`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`)."
+                                "synthesized response. Keys/endpoints are read from `.env` "
+                                "and can be overridden in the fields below.\n\n"
+                                + "\n".join(_pp_status_lines)
                             )
                             pp_backend_dd = gr.Dropdown(
                                 choices=list(_PP_BACKEND_LABELS.keys()),
@@ -1406,13 +1436,13 @@ def build_ui() -> gr.Blocks:
                                 pp_endpoint_txt = gr.Textbox(
                                     label="Endpoint URL",
                                     placeholder="http://localhost:8000/v1",
+                                    value=os.environ.get("OPENAI_COMPAT_ENDPOINT", ""),
                                     visible=False,
-                                    scale=3,
                                 )
                                 pp_model_txt = gr.Textbox(
                                     label="Model",
                                     placeholder="claude-haiku-4-5-20251001 / gemini-2.0-flash / llama3",
-                                    value="",
+                                    value=os.environ.get("OPENAI_COMPAT_MODEL", ""),
                                 )
                                 pp_key_txt = gr.Textbox(
                                     label="API key (leave blank to use .env)",
