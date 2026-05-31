@@ -161,8 +161,19 @@ def _run_single_question(
         )
         cli_args += ["--result_jsonl", result_jsonl, "--num_samples", "-1"]
 
-        # Run with stdout captured
-        captured = io.StringIO()
+        # Run with stdout captured (also tee to global log buffer)
+        class _TeeCapture:
+            def __init__(self) -> None:
+                self._buf = io.StringIO()
+            def write(self, s: str) -> None:
+                self._buf.write(s)
+                _log_write(s)
+            def flush(self) -> None:
+                pass
+            def getvalue(self) -> str:
+                return self._buf.getvalue()
+
+        captured = _TeeCapture()
         old_argv, sys.argv = sys.argv[:], [module.__file__ or "serve"] + cli_args
         try:
             with contextlib.redirect_stdout(captured):
@@ -385,6 +396,7 @@ class _QueueWriter:
             raise _BatchStopped()
         if s:
             self._q.put(s)
+            _log_write(s)
 
     def flush(self) -> None:
         pass
@@ -944,6 +956,24 @@ _STYLE_AGENT_ROLES: Dict[str, List[Tuple[str, str]]] = {
     "deliberation":      [("reflector", "Reflector"), ("toolcaller", "Toolcaller")],
 }
 
+# Approximate per-agent VRAM at bfloat16 (GB) — used for pre-check warnings
+_AGENT_VRAM_GB: Dict[str, Dict[str, float]] = {
+    "sequential_light":  {"planner": 1.5, "critic": 1.0, "solver": 1.8},
+    "sequential_scaled": {"planner": 3.5, "critic": 2.5, "solver": 3.5},
+    "mixture":           {"math": 1.5, "code": 2.5, "science": 5.5, "summarizer": 1.5},
+    "distillation":      {"expert": 8.0, "learner": 3.5},
+    "deliberation":      {"reflector": 3.5, "toolcaller": 3.5},
+}
+
+# Approximate total VRAM per style (GB) — shown in Chat tab
+_STYLE_VRAM_GB: Dict[str, float] = {
+    "sequential_light": 5.0,
+    "sequential_scaled": 12.0,
+    "mixture": 15.0,
+    "distillation": 18.0,
+    "deliberation": 12.0,
+}
+
 
 def _available_devices() -> List[str]:
     devs: List[str] = []
@@ -952,6 +982,138 @@ def _available_devices() -> List[str]:
             devs.append(f"cuda:{i}")
     devs.append("cpu")
     return devs
+
+
+def _vram_info() -> Dict[str, Tuple[float, float]]:
+    """Return {device_str: (free_gb, total_gb)} for every CUDA device."""
+    result: Dict[str, Tuple[float, float]] = {}
+    if not torch.cuda.is_available():
+        return result
+    for i in range(torch.cuda.device_count()):
+        try:
+            free, total = torch.cuda.mem_get_info(i)
+            result[f"cuda:{i}"] = (free / 1024 ** 3, total / 1024 ** 3)
+        except Exception:
+            pass
+    return result
+
+
+def _vram_status_md(device: str, style: str) -> str:
+    """Return a one-line markdown VRAM status for the given device/style pair."""
+    if device == "cpu":
+        return "<small>CPU mode — no VRAM limit.</small>"
+    info = _vram_info()
+    if device not in info:
+        return "<small>VRAM info unavailable.</small>"
+    free, total = info[device]
+    needed = _STYLE_VRAM_GB.get(style, 0.0)
+    pct_used = (total - free) / total * 100 if total > 0 else 0
+    icon = "🔴" if free < needed else "🟡" if free < needed * 1.25 else "🟢"
+    line = f"{icon} **{device}**: {free:.1f} GB free / {total:.1f} GB &nbsp;({pct_used:.0f}% used)"
+    if needed > 0:
+        fit = "✅ fits" if free >= needed else f"⚠️ **may OOM** — {needed:.0f} GB needed, only {free:.1f} GB free"
+        line += f"  \n<small>Style `{style}` needs ~{needed:.0f} GB — {fit}</small>"
+    return line
+
+
+# ── Global log buffer ──────────────────────────────────────────────────────────
+
+_LOG_BUFFER: List[str] = []
+_LOG_LOCK = threading.Lock()
+_LOG_MAX_CHARS = 300_000  # ~300 KB rolling window
+
+
+def _log_write(text: str) -> None:
+    if not text:
+        return
+    with _LOG_LOCK:
+        _LOG_BUFFER.append(text)
+        total = sum(len(s) for s in _LOG_BUFFER)
+        while total > _LOG_MAX_CHARS and len(_LOG_BUFFER) > 1:
+            total -= len(_LOG_BUFFER.pop(0))
+
+
+def _log_get() -> str:
+    with _LOG_LOCK:
+        return "".join(_LOG_BUFFER)
+
+
+def _log_clear() -> str:
+    with _LOG_LOCK:
+        _LOG_BUFFER.clear()
+    return ""
+
+
+def _analyze_log(log_text: str) -> str:
+    import re as _re
+    if not log_text.strip():
+        return "*No log content — run an inference or batch evaluation first.*"
+
+    issues: List[str] = []
+    warnings_found: List[str] = []
+    successes: List[str] = []
+
+    # OOM
+    if _re.search(r"OutOfMemoryError|CUDA out of memory", log_text):
+        devs = _re.findall(r"(cuda:\d+|GPU \d+)", log_text)
+        label = ", ".join(sorted(set(devs))) if devs else "unknown device"
+        issues.append(f"GPU OOM on **{label}** — reduce batch size or use a style with lower VRAM requirements")
+
+    # Python errors (first 3 unique)
+    errs = _re.findall(r"((?:RuntimeError|ValueError|KeyError|TypeError|AttributeError|ImportError): .+)", log_text)
+    seen: set = set()
+    for e in errs:
+        short = e[:140]
+        if short not in seen:
+            seen.add(short)
+            issues.append(f"`{short}`")
+        if len(seen) >= 3:
+            break
+
+    # Download / setup failures
+    if _re.search(r"❌ Download failed|❌ Failed `|❌ Setup error", log_text):
+        issues.append("Model download or setup failed — check network and Model Manager")
+
+    # Incomplete model cache
+    if _re.search(r"⚠️ incomplete", log_text):
+        warnings_found.append("Incomplete model cache detected — use 🔄 Update in Model Manager")
+
+    # User stop
+    if _re.search(r"⏹ Stopped|⏹ Batch stopped", log_text):
+        warnings_found.append("Batch run was stopped by user")
+
+    # Accuracy results
+    accs = _re.findall(r"accuracy=([0-9]+(?:\.[0-9]+)?)%", log_text)
+    for a in accs:
+        successes.append(f"Accuracy result: **{a}%**")
+
+    # Multi-GPU activation lines
+    mgpu = _re.findall(r"\[multi-gpu\] (.+)", log_text)
+    for line in mgpu[:3]:
+        successes.append(f"Multi-GPU active: `{line.strip()}`")
+
+    # Model cache events
+    loads = len(_re.findall(r"\[serve\] loading", log_text))
+    hits  = len(_re.findall(r"\[serve\] cache hit", log_text))
+    if loads or hits:
+        successes.append(f"Model loads: **{loads}**, cache hits: **{hits}**")
+
+    # Batch completion
+    if _re.search(r"✅ Batch complete", log_text):
+        successes.append("Batch evaluation completed successfully")
+
+    if not issues and not warnings_found and not successes:
+        return "*No notable events found.*"
+
+    parts: List[str] = []
+    if issues:
+        parts.append("### ❌ Issues\n" + "\n".join(f"- {i}" for i in issues))
+    if warnings_found:
+        parts.append("### ⚠️ Warnings\n" + "\n".join(f"- {w}" for w in warnings_found))
+    if successes:
+        parts.append("### ✅ Events\n" + "\n".join(f"- {s}" for s in successes))
+    return "\n\n".join(parts)
+
 
 
 def _mg_update_style(style: str, enabled: bool):
@@ -983,7 +1145,23 @@ def _mg_apply(style: str, enabled: bool, dev0: str, dev1: str, dev2: str, dev3: 
     device_map = {role: devs[i] for i, (role, _) in enumerate(roles)}
     new_state[style] = device_map
     parts = [f"{lbl}→{devs[i]}" for i, (_, lbl) in enumerate(roles)]
-    return new_state, f"✅ **{style}** multi-GPU active: {', '.join(parts)}"
+    status_lines = [f"✅ **{style}** multi-GPU active: {', '.join(parts)}", ""]
+
+    # Per-agent VRAM check
+    vram = _vram_info()
+    agent_vrams = _AGENT_VRAM_GB.get(style, {})
+    for i, (role, lbl) in enumerate(roles):
+        dev = devs[i]
+        needed = agent_vrams.get(role, 0.0)
+        if dev in vram:
+            free, total = vram[dev]
+            icon = "🟢" if free >= needed * 1.25 else "🟡" if free >= needed else "🔴"
+            fit = "OK" if free >= needed else f"⚠️ **may OOM** ({needed:.1f} GB needed, {free:.1f} GB free)"
+            status_lines.append(f"{icon} **{lbl}** on `{dev}`: ~{needed:.1f} GB — {fit}")
+        else:
+            status_lines.append(f"ℹ️ **{lbl}** on `{dev}`: ~{needed:.1f} GB needed (VRAM info unavailable)")
+
+    return new_state, "\n".join(status_lines)
 
 
 # ── Gradio layout ─────────────────────────────────────────────────────────────
@@ -1045,7 +1223,9 @@ def build_ui() -> gr.Blocks:
                         rounds_sl = gr.Slider(1, 5, value=3, step=1, label="Recursive rounds")
                         latent_sl = gr.Slider(8, 64, value=32, step=8, label="Latent steps")
                         device_dd = gr.Dropdown(choices=device_opts, value=device_opts[0], label="Device")
-                        gr.Markdown(_vram_note)
+                        vram_status_md = gr.Markdown(
+                            _vram_status_md(device_opts[0], "sequential_light"),
+                        )
                         with gr.Accordion("Advanced settings", open=False):
                             temperature_sl = gr.Slider(
                                 0.0, 1.0, value=0.6, step=0.05,
@@ -1089,6 +1269,16 @@ def build_ui() -> gr.Blocks:
                     lambda s: _STYLE_DESCRIPTIONS.get(s, ""),
                     inputs=[style_dd],
                     outputs=[style_info],
+                )
+                style_dd.change(
+                    _vram_status_md,
+                    inputs=[device_dd, style_dd],
+                    outputs=[vram_status_md],
+                )
+                device_dd.change(
+                    _vram_status_md,
+                    inputs=[device_dd, style_dd],
+                    outputs=[vram_status_md],
                 )
 
             # ── Tab 2: Batch Evaluation ───────────────────────────────────
@@ -1305,6 +1495,40 @@ def build_ui() -> gr.Blocks:
                         ],
                         outputs=[device_map_state, mg_status],
                     )
+
+            # ── Tab 5: Logs ───────────────────────────────────────────────
+            with gr.Tab("📋 Logs"):
+                gr.Markdown(
+                    "### Inference & system log\n"
+                    "Captures all output from chat inference, batch evaluation, and model downloads. "
+                    "Click **🔍 Analyze** to scan for errors, OOM events, and accuracy results."
+                )
+                with gr.Row():
+                    log_refresh_btn  = gr.Button("🔄 Refresh", size="sm", variant="secondary")
+                    log_clear_btn    = gr.Button("🗑 Clear",   size="sm")
+                    log_analyze_btn  = gr.Button("🔍 Analyze", size="sm", variant="primary")
+
+                log_display = gr.Code(
+                    label="Log output",
+                    language=None,
+                    lines=28,
+                    interactive=False,
+                    value="",
+                )
+                log_analysis_md = gr.Markdown("*Click 🔍 Analyze to scan for issues and events.*")
+
+                log_refresh_btn.click(
+                    lambda: _log_get(),
+                    outputs=[log_display],
+                )
+                log_clear_btn.click(
+                    lambda: (_log_clear(), "*Log cleared.*"),
+                    outputs=[log_display, log_analysis_md],
+                )
+                log_analyze_btn.click(
+                    lambda: (_log_get(), _analyze_log(_log_get())),
+                    outputs=[log_display, log_analysis_md],
+                )
 
     return demo
 
