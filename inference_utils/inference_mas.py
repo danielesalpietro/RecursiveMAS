@@ -1801,6 +1801,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--trust_remote_code", type=int, default=1, choices=[0, 1])
     parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--agent1_device", type=str, default=None,
+                        help="Device for Planner. Falls back to --device if unset.")
+    parser.add_argument("--agent2_device", type=str, default=None,
+                        help="Device for Critic/Refiner. Falls back to --device if unset.")
+    parser.add_argument("--agent3_device", type=str, default=None,
+                        help="Device for Solver. Falls back to --device if unset.")
     parser.add_argument(
         "--enable_thinking",
         type=int,
@@ -1867,6 +1873,12 @@ def main() -> None:
         )
 
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    _dev = lambda s: torch.device(s) if s else device
+    agent1_device = _dev(getattr(args, "agent1_device", None))
+    agent2_device = _dev(getattr(args, "agent2_device", None))
+    agent3_device = _dev(getattr(args, "agent3_device", None))
+    if agent1_device != device or agent2_device != device or agent3_device != device:
+        print(f"[multi-gpu] planner={agent1_device}  critic={agent2_device}  solver={agent3_device}", flush=True)
     model_dtype = resolve_dtype(args.dtype)
     outer_dtype = resolve_dtype(args.outer_dtype)
     if model_dtype is None or outer_dtype is None:
@@ -2294,7 +2306,7 @@ def main() -> None:
             outer_12_type=outer_12_type,
             latent_steps=args.latent_steps,
             batch_size=args.batch_size,
-            device=device,
+            device=agent1_device,
             model_dtype=model_dtype,
             outer_dtype=outer_dtype,
             trust_remote_code=trust_remote_code,
@@ -2312,7 +2324,7 @@ def main() -> None:
             outer_23_type=outer_23_type,
             latent_steps=args.latent_steps,
             batch_size=args.batch_size,
-            device=device,
+            device=agent2_device,
             model_dtype=model_dtype,
             outer_dtype=outer_dtype,
             trust_remote_code=trust_remote_code,
@@ -2331,7 +2343,7 @@ def main() -> None:
             do_sample=args.do_sample,
             temperature=args.temperature,
             top_p=args.top_p,
-            device=device,
+            device=agent3_device,
             dtype=model_dtype,
             trust_remote_code=trust_remote_code,
             enable_thinking=enable_thinking,
@@ -2401,7 +2413,7 @@ def main() -> None:
                     outer_12_type=outer_12_type,
                     latent_steps=args.latent_steps,
                     batch_size=args.batch_size,
-                    device=device,
+                    device=agent1_device,
                     model_dtype=model_dtype,
                     outer_dtype=outer_dtype,
                     trust_remote_code=trust_remote_code,
@@ -2422,7 +2434,7 @@ def main() -> None:
                     outer_12_type=outer_12_type,
                     latent_steps=args.latent_steps,
                     batch_size=args.batch_size,
-                    device=device,
+                    device=agent1_device,
                     model_dtype=model_dtype,
                     outer_dtype=outer_dtype,
                     trust_remote_code=trust_remote_code,
@@ -2441,7 +2453,7 @@ def main() -> None:
                 outer_23_type=outer_23_type,
                 latent_steps=args.latent_steps,
                 batch_size=args.batch_size,
-                device=device,
+                device=agent2_device,
                 model_dtype=model_dtype,
                 outer_dtype=outer_dtype,
                 trust_remote_code=trust_remote_code,
@@ -2463,7 +2475,7 @@ def main() -> None:
                     outer_31_type=outer_31_type,
                     latent_steps=args.latent_steps,
                     batch_size=args.batch_size,
-                    device=device,
+                    device=agent3_device,
                     model_dtype=model_dtype,
                     outer_dtype=outer_dtype,
                     trust_remote_code=trust_remote_code,
@@ -2487,7 +2499,7 @@ def main() -> None:
             do_sample=args.do_sample,
             temperature=args.temperature,
             top_p=args.top_p,
-            device=device,
+            device=agent3_device,
             dtype=model_dtype,
             trust_remote_code=trust_remote_code,
             enable_thinking=enable_thinking,

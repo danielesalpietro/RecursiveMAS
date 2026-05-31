@@ -8,7 +8,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 THIS_DIR = Path(__file__).resolve().parent
 PARENT_DIR = THIS_DIR.parent
@@ -234,6 +234,31 @@ def run_module(module, cli_args: List[str]) -> Tuple[str, float, str]:
     return metric_name, metric_value, text
 
 
+def _append_device_map(cli: List[str], family: str, device_map: Optional[Dict[str, str]]) -> None:
+    """Append per-agent --*_device flags when a device_map is provided."""
+    if not device_map:
+        return
+    if family == "sequential":
+        for flag, key in [("--agent1_device", "planner"), ("--agent2_device", "critic"), ("--agent3_device", "solver")]:
+            if key in device_map:
+                cli.extend([flag, device_map[key]])
+    elif family == "mixture":
+        for flag, key in [
+            ("--agent1_device", "math"), ("--agent2_device", "code"),
+            ("--agent3_device", "science"), ("--agent4_device", "summarizer"),
+        ]:
+            if key in device_map:
+                cli.extend([flag, device_map[key]])
+    elif family == "distillation":
+        for flag, key in [("--expert_device", "expert"), ("--learner_device", "learner")]:
+            if key in device_map:
+                cli.extend([flag, device_map[key]])
+    elif family == "deliberation":
+        for flag, key in [("--reflector_device", "reflector"), ("--toolcaller_device", "toolcaller")]:
+            if key in device_map:
+                cli.extend([flag, device_map[key]])
+
+
 def build_cli_for_style(
     args: argparse.Namespace,
     family: str,
@@ -242,6 +267,7 @@ def build_cli_for_style(
     paths: Dict[str, Path],
     latent_steps: int,
     max_new_tokens: int,
+    device_map: Optional[Dict[str, str]] = None,
 ) -> Tuple[object, List[str]]:
     common = build_common_cli(args, dataset_arg=dataset_arg, dataset_split=dataset_split, latent_steps=latent_steps, max_new_tokens=max_new_tokens)
 
@@ -263,6 +289,7 @@ def build_cli_for_style(
             "--inner_adapter_type_fallback", "ln_res_adapter",
             "--outer_adapter_type_fallback", "outer_ln_res_adapter",
         ] + common
+        _append_device_map(cli, family, device_map)
         return inference_mas, cli
 
     if family == "mixture":
@@ -285,6 +312,7 @@ def build_cli_for_style(
             "--inner_adapter_type_fallback", "ln_res_adapter",
             "--outer_adapter_type_fallback", "outer_ln_res_adapter",
         ] + common
+        _append_device_map(cli, family, device_map)
         return inference_mas_mixture, cli
 
     if family == "distillation":
@@ -299,6 +327,7 @@ def build_cli_for_style(
             "--inner_adapter_type_fallback", "ln_res_adapter",
             "--outer_adapter_type_fallback", "outer_ln_res_adapter",
         ] + common
+        _append_device_map(cli, family, device_map)
         return inference_mas_distill, cli
 
     if family == "deliberation":
@@ -318,6 +347,7 @@ def build_cli_for_style(
             "--result_max_chars", "6000",
         ] + common
         cli.append("--quiet_tools")
+        _append_device_map(cli, family, device_map)
         return inference_mas_deliberation, cli
 
     raise ValueError(f"Unsupported style family: {family}")

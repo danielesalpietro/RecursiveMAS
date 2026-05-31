@@ -99,6 +99,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--outer_dtype", type=str, default="auto", choices=["float32", "float16", "bfloat16", "auto"])
     parser.add_argument("--trust_remote_code", type=int, default=1, choices=[0, 1])
     parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--agent1_device", type=str, default=None,
+                        help="Device for Math specialist. Falls back to --device if unset.")
+    parser.add_argument("--agent2_device", type=str, default=None,
+                        help="Device for Code specialist. Falls back to --device if unset.")
+    parser.add_argument("--agent3_device", type=str, default=None,
+                        help="Device for Science specialist. Falls back to --device if unset.")
+    parser.add_argument("--agent4_device", type=str, default=None,
+                        help="Device for Summarizer. Falls back to --device if unset.")
     parser.add_argument("--enable_thinking", type=int, default=0, choices=[0, 1])
     parser.add_argument("--result_jsonl", type=str, default="")
     return parser.parse_args()
@@ -596,6 +604,16 @@ def main() -> None:
         print("[warn] --presence_penalty is ignored by HF generation in this pipeline.")
 
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    _dev = lambda s: torch.device(s) if s else device
+    expert_devices = [
+        _dev(getattr(args, "agent1_device", None)),
+        _dev(getattr(args, "agent2_device", None)),
+        _dev(getattr(args, "agent3_device", None)),
+    ]
+    summarizer_device = _dev(getattr(args, "agent4_device", None))
+    multi_gpu = (len({str(d) for d in expert_devices + [summarizer_device]}) > 1)
+    if multi_gpu:
+        print(f"[multi-gpu] math={expert_devices[0]}  code={expert_devices[1]}  science={expert_devices[2]}  summarizer={summarizer_device}", flush=True)
     model_dtype = base.resolve_dtype(args.dtype)
     outer_dtype = base.resolve_dtype(args.outer_dtype)
     if model_dtype is None or outer_dtype is None:
@@ -679,13 +697,13 @@ def main() -> None:
     for round_idx in range(args.num_recursive_rounds):
         rid = round_idx + 1
         print(f"[round {rid}/{args.num_recursive_rounds}]")
-        expert_latents = []
-        for expert_idx, role in enumerate(HIE_EXPERT_ROLES):
+        import concurrent.futures as _cf
+
+        def _run_expert(expert_idx, role):
             model_name = getattr(args, f"agent{expert_idx + 1}_model_name_or_path")
             inner_path = getattr(args, f"agent{expert_idx + 1}_inner_aligner_path")
             out_key = f"outer_{expert_idx + 1}s"
             feedback_latents = current_feedbacks[expert_idx]
-
             if feedback_latents is None:
                 expert_inputs_for_log[f"{role}_r{rid}"] = [
                     build_hie_expert_prompt_text(q, role, i, mas_task, task_types, fn_names)
@@ -694,16 +712,14 @@ def main() -> None:
             else:
                 expert_inputs_for_log[f"{role}_r{rid}"] = [
                     build_hie_expert_prompt_with_feedback_slot(
-                        q,
-                        role,
+                        q, role,
                         mas_task=mas_task,
                         task_type=(task_types[i] if (is_code_eval and task_types is not None) else "complete"),
                         fn_name=(fn_names[i] if fn_names is not None else None),
                     )
                     for i, q in enumerate(questions)
                 ]
-
-            latents = run_hie_expert_latent_stage(
+            return run_hie_expert_latent_stage(
                 stage_name=f"{role}-latent-r{rid}",
                 model_name_or_path=model_name,
                 questions=questions,
@@ -713,7 +729,7 @@ def main() -> None:
                 outer_type=outer_types[out_key],
                 latent_steps=args.latent_steps,
                 batch_size=args.batch_size,
-                device=device,
+                device=expert_devices[expert_idx],
                 model_dtype=model_dtype,
                 outer_dtype=outer_dtype,
                 trust_remote_code=trust_remote_code,
@@ -724,7 +740,16 @@ def main() -> None:
                 fn_names=fn_names,
                 feedback_latents=feedback_latents,
             )
-            expert_latents.append(latents)
+
+        if multi_gpu:
+            with _cf.ThreadPoolExecutor(max_workers=len(HIE_EXPERT_ROLES)) as _pool:
+                _futs = {_pool.submit(_run_expert, i, role): i for i, role in enumerate(HIE_EXPERT_ROLES)}
+                _results = [None] * len(HIE_EXPERT_ROLES)
+                for _fut in _cf.as_completed(_futs):
+                    _results[_futs[_fut]] = _fut.result()
+            expert_latents = _results
+        else:
+            expert_latents = [_run_expert(i, role) for i, role in enumerate(HIE_EXPERT_ROLES)]
 
         final_expert_latents = (expert_latents[0], expert_latents[1], expert_latents[2])
         summarizer_input_for_log = [
@@ -742,7 +767,7 @@ def main() -> None:
             do_sample=args.do_sample,
             temperature=args.temperature,
             top_p=args.top_p,
-            device=device,
+            device=summarizer_device,
             dtype=model_dtype,
             trust_remote_code=trust_remote_code,
             enable_thinking=enable_thinking,
@@ -763,7 +788,7 @@ def main() -> None:
                 outer_back_types=outer_types,
                 latent_steps=args.latent_steps,
                 batch_size=args.batch_size,
-                device=device,
+                device=summarizer_device,
                 model_dtype=model_dtype,
                 outer_dtype=outer_dtype,
                 trust_remote_code=trust_remote_code,
@@ -784,7 +809,7 @@ def main() -> None:
             outputs=final_outputs,
             dataset_name=dataset_name,
             batch_size=args.batch_size,
-            device=device,
+            device=summarizer_device,
             dtype=model_dtype,
             trust_remote_code=trust_remote_code,
             do_sample=args.do_sample,
@@ -819,7 +844,7 @@ def main() -> None:
                 do_sample=args.do_sample,
                 temperature=args.temperature,
                 top_p=args.top_p,
-                device=device,
+                device=summarizer_device,
                 dtype=model_dtype,
                 trust_remote_code=trust_remote_code,
                 enable_thinking=enable_thinking,
@@ -833,7 +858,7 @@ def main() -> None:
                     outputs=rollout_outputs,
                     dataset_name=dataset_name,
                     batch_size=args.batch_size,
-                    device=device,
+                    device=summarizer_device,
                     dtype=model_dtype,
                     trust_remote_code=trust_remote_code,
                     do_sample=args.do_sample,

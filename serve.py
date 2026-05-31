@@ -111,6 +111,7 @@ def _run_single_question(
     temperature: float = 0.6,
     top_p: float = 0.95,
     seed: int = 42,
+    device_map: Optional[Dict[str, str]] = None,
 ) -> Tuple[str, str]:
     """
     Run the MAS pipeline on one question.
@@ -156,6 +157,7 @@ def _run_single_question(
             paths=paths,
             latent_steps=latent_steps,
             max_new_tokens=max_new_tokens,
+            device_map=device_map or {},
         )
         cli_args += ["--result_jsonl", result_jsonl, "--num_samples", "-1"]
 
@@ -293,6 +295,7 @@ def respond(
     temperature: float,
     top_p: float,
     seed: int,
+    device_map_state: Optional[Dict] = None,
 ) -> Tuple[List[Dict], List[Dict], str]:
     global _CURRENT_STYLE
 
@@ -310,11 +313,14 @@ def respond(
         _evict_cache()
     _CURRENT_STYLE = style
 
+    device_map = (device_map_state or {}).get(style)
+
     try:
         t_start = datetime.now()
         stdout, parsed = _run_single_question(
             style, message, device, num_rounds, latent_steps, domain,
             temperature=temperature, top_p=top_p, seed=seed,
+            device_map=device_map,
         )
         t_end = datetime.now()
         elapsed = str(t_end - t_start).split(".")[0]  # HH:MM:SS
@@ -396,6 +402,7 @@ def _batch_worker(
     seed: int,
     result_jsonl: str,
     log_q: "_queue.Queue[Optional[str]]",
+    device_map: Optional[Dict[str, str]] = None,
 ) -> None:
     """Runs the MAS pipeline over a full dataset in a background thread."""
     import argparse as _ap
@@ -429,6 +436,7 @@ def _batch_worker(
             paths=paths,
             latent_steps=latent_steps,
             max_new_tokens=max_new_tokens,
+            device_map=device_map or {},
         )
 
         cli_args += ["--result_jsonl", result_jsonl]
@@ -471,6 +479,7 @@ def run_batch_eval(
     temperature: float,
     top_p: float,
     seed: int,
+    device_map_state: Optional[Dict] = None,
 ):
     """Gradio generator: streams log lines and yields (log_text, file, run_btn, stop_btn)."""
     import re as _re
@@ -485,13 +494,14 @@ def run_batch_eval(
 
     _BATCH_STOP_EVENT.clear()
 
+    device_map = (device_map_state or {}).get(style)
     result_jsonl = tempfile.mktemp(suffix=".jsonl", prefix="house_batch_")
     log_q: "_queue.Queue[Optional[str]]" = _queue.Queue()
 
     thread = threading.Thread(
         target=_batch_worker,
         args=(style, dataset, num_samples, device, rounds, latent_steps,
-              temperature, top_p, seed, result_jsonl, log_q),
+              temperature, top_p, seed, result_jsonl, log_q, device_map),
         daemon=True,
     )
     thread.start()
@@ -924,6 +934,58 @@ _ARCH_HTML = """
 </div>
 """
 
+# ── Multi-GPU helpers ─────────────────────────────────────────────────────────
+
+_STYLE_AGENT_ROLES: Dict[str, List[Tuple[str, str]]] = {
+    "sequential_light":  [("planner", "Planner"), ("critic", "Critic"), ("solver", "Solver")],
+    "sequential_scaled": [("planner", "Planner"), ("critic", "Critic"), ("solver", "Solver")],
+    "mixture":           [("math", "Math"), ("code", "Code"), ("science", "Science"), ("summarizer", "Summarizer")],
+    "distillation":      [("expert", "Expert"), ("learner", "Learner")],
+    "deliberation":      [("reflector", "Reflector"), ("toolcaller", "Toolcaller")],
+}
+
+
+def _available_devices() -> List[str]:
+    devs: List[str] = []
+    if torch.cuda.is_available():
+        for i in range(torch.cuda.device_count()):
+            devs.append(f"cuda:{i}")
+    devs.append("cpu")
+    return devs
+
+
+def _mg_update_style(style: str, enabled: bool):
+    """Return gr.update() tuples for the 4 agent rows when the style changes."""
+    roles = _STYLE_AGENT_ROLES.get(style, [])
+    out = []
+    for i in range(4):
+        visible = enabled and i < len(roles)
+        label = f"**{roles[i][1]}** (`{roles[i][0]}`)" if i < len(roles) else ""
+        out += [gr.update(visible=visible), gr.update(value=label)]
+    return out  # 8 items: row_vis, lbl_val × 4
+
+
+def _mg_toggle_enabled(enabled: bool, style: str):
+    """Show/hide agent rows + apply button when the enable checkbox changes."""
+    roles = _STYLE_AGENT_ROLES.get(style, [])
+    row_updates = [gr.update(visible=enabled and i < len(roles)) for i in range(4)]
+    return [gr.update(visible=enabled)] + row_updates  # apply_btn + 4 rows
+
+
+def _mg_apply(style: str, enabled: bool, dev0: str, dev1: str, dev2: str, dev3: str, state: dict):
+    """Store the per-agent device assignment for *style* in the shared state."""
+    new_state = dict(state or {})
+    if not enabled:
+        new_state.pop(style, None)
+        return new_state, "*Multi-GPU disabled — agents use the global Device setting.*"
+    roles = _STYLE_AGENT_ROLES.get(style, [])
+    devs = [dev0, dev1, dev2, dev3]
+    device_map = {role: devs[i] for i, (role, _) in enumerate(roles)}
+    new_state[style] = device_map
+    parts = [f"{lbl}→{devs[i]}" for i, (_, lbl) in enumerate(roles)]
+    return new_state, f"✅ **{style}** multi-GPU active: {', '.join(parts)}"
+
+
 # ── Gradio layout ─────────────────────────────────────────────────────────────
 
 
@@ -939,6 +1001,8 @@ def build_ui() -> gr.Blocks:
         "- `deliberation` ≈ 12 GB"
     )
 
+    all_devs = _available_devices()
+
     with gr.Blocks(title=f"HOUSE — RecursiveMAS v{_VERSION}") as demo:
         gr.Markdown(
             f"# 🏥 HOUSE &nbsp;<sup style='font-size:0.5em;color:#888'>v{_VERSION}</sup>\n"
@@ -946,6 +1010,9 @@ def build_ui() -> gr.Blocks:
             "> Inspired by Dr. Gregory House — three specialist agents debate, refine, and solve.  \n"
             "> Models load into VRAM on first request and stay warm for subsequent ones."
         )
+
+        # Shared state: maps style_name → {role: device_str}
+        device_map_state = gr.State({})
 
         with gr.Tabs():
 
@@ -1014,6 +1081,7 @@ def build_ui() -> gr.Blocks:
                             msg, state, style_dd, domain_dd,
                             rounds_sl, latent_sl, device_dd,
                             temperature_sl, top_p_sl, seed_num,
+                            device_map_state,
                         ],
                         outputs=[chatbot, state, msg],
                     )
@@ -1093,6 +1161,7 @@ def build_ui() -> gr.Blocks:
                     inputs=[
                         b_style_dd, b_dataset_dd, b_samples_num, b_device_dd,
                         b_rounds_sl, b_latent_sl, b_temp_sl, b_topp_sl, b_seed_num,
+                        device_map_state,
                     ],
                     outputs=[batch_log, dl_file, run_btn, stop_btn],
                 )
@@ -1154,7 +1223,7 @@ def build_ui() -> gr.Blocks:
                     outputs=[mm_log, mm_catalog_df],
                 )
 
-            # ── Tab 4: Architectures ──────────────────────────────────────
+            # ── Tab 4: Architectures & Multi-GPU ─────────────────────────
             with gr.Tab("📐 Architectures"):
                 gr.Markdown(
                     "### Collaboration style — pipeline diagrams\n"
@@ -1163,6 +1232,79 @@ def build_ui() -> gr.Blocks:
                     "via trained **RecursiveLink (RL)** adapters — no text is exchanged between agents within a round."
                 )
                 gr.HTML(_ARCH_HTML)
+
+                gr.HTML("<hr style='margin:28px 0 20px;border:none;border-top:2px solid #e0e0e0'>")
+
+                with gr.Accordion("⚙️ Multi-GPU Configuration (Experimental)", open=False):
+                    gr.Markdown(
+                        "Assign each agent in a collaboration style to a different GPU.  \n"
+                        "Latent tensors move between devices automatically (`.to(device)`) — "
+                        "the RecursiveLink adapters always run on the **source agent's device**.  \n"
+                        "In Mixture style the three specialists can run **in parallel** on separate GPUs.  \n\n"
+                        "⚠️ *Requires at least 2 CUDA devices. Default (single-GPU) behaviour is preserved when disabled.*"
+                    )
+
+                    with gr.Row():
+                        mg_style_dd = gr.Dropdown(
+                            choices=list(STYLE_SPECS.keys()),
+                            value="sequential_light",
+                            label="Style to configure",
+                            scale=2,
+                        )
+                        mg_enabled_cb = gr.Checkbox(
+                            value=False,
+                            label="Enable multi-GPU for this style",
+                            scale=1,
+                        )
+
+                    # 4 agent rows (max = mixture with 4 agents)
+                    _init_roles = _STYLE_AGENT_ROLES["sequential_light"]
+                    mg_row_comps: List[Tuple] = []
+                    for _i in range(4):
+                        _visible = False  # hidden until checkbox enabled
+                        _label = f"**{_init_roles[_i][1]}** (`{_init_roles[_i][0]}`)" if _i < len(_init_roles) else ""
+                        with gr.Row(visible=_visible) as _mg_row:
+                            _mg_lbl = gr.Markdown(_label, min_width=140)
+                            _mg_dev = gr.Dropdown(
+                                choices=all_devs,
+                                value=all_devs[0] if all_devs else "cpu",
+                                label=f"Agent {_i + 1} device",
+                                scale=2,
+                            )
+                        mg_row_comps.append((_mg_row, _mg_lbl, _mg_dev))
+
+                    mg_apply_btn = gr.Button("💾 Apply Configuration", variant="primary", visible=False)
+                    mg_status = gr.Markdown(
+                        "*Multi-GPU disabled — all agents use the global Device setting.*"
+                    )
+
+                    # ── events ───────────────────────────────────────────────
+                    _mg_row_outputs = []
+                    for _mg_row, _mg_lbl, _ in mg_row_comps:
+                        _mg_row_outputs += [_mg_row, _mg_lbl]
+
+                    mg_style_dd.change(
+                        _mg_update_style,
+                        inputs=[mg_style_dd, mg_enabled_cb],
+                        outputs=_mg_row_outputs,
+                    )
+
+                    mg_enabled_cb.change(
+                        _mg_toggle_enabled,
+                        inputs=[mg_enabled_cb, mg_style_dd],
+                        outputs=[mg_apply_btn] + [row for row, _, _ in mg_row_comps],
+                    )
+
+                    mg_apply_btn.click(
+                        _mg_apply,
+                        inputs=[
+                            mg_style_dd, mg_enabled_cb,
+                            mg_row_comps[0][2], mg_row_comps[1][2],
+                            mg_row_comps[2][2], mg_row_comps[3][2],
+                            device_map_state,
+                        ],
+                        outputs=[device_map_state, mg_status],
+                    )
 
     return demo
 

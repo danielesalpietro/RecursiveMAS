@@ -162,6 +162,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--outer_dtype", type=str, default="auto", choices=["float32", "float16", "bfloat16", "auto"])
     parser.add_argument("--trust_remote_code", type=int, default=1, choices=[0, 1])
     parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--reflector_device", type=str, default=None,
+                        help="Device for Reflector model. Falls back to --device if unset.")
+    parser.add_argument("--toolcaller_device", type=str, default=None,
+                        help="Device for Toolcaller model. Falls back to --device if unset.")
     parser.add_argument("--enable_thinking", type=int, default=0, choices=[0, 1])
     parser.add_argument("--result_jsonl", type=str, default="")
     return parser.parse_args()
@@ -1092,6 +1096,11 @@ def main() -> None:
         print("[warn] --presence_penalty is ignored by HF generation in this pipeline.")
 
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    _dev = lambda s: torch.device(s) if s else device
+    reflector_device = _dev(getattr(args, "reflector_device", None))
+    toolcaller_device = _dev(getattr(args, "toolcaller_device", None))
+    if reflector_device != device or toolcaller_device != device:
+        print(f"[multi-gpu] reflector={reflector_device}  toolcaller={toolcaller_device}", flush=True)
     model_dtype = base.resolve_dtype(args.dtype)
     outer_dtype = base.resolve_dtype(args.outer_dtype)
     if model_dtype is None or outer_dtype is None:
@@ -1173,7 +1182,7 @@ def main() -> None:
             do_sample=args.do_sample,
             temperature=args.temperature,
             top_p=args.top_p,
-            device=device,
+            device=reflector_device,
             dtype=model_dtype,
             trust_remote_code=trust_remote_code,
             enable_thinking=enable_thinking,
@@ -1193,7 +1202,7 @@ def main() -> None:
             do_sample=args.do_sample,
             temperature=args.temperature,
             top_p=args.top_p,
-            device=device,
+            device=toolcaller_device,
             dtype=model_dtype,
             trust_remote_code=trust_remote_code,
             enable_thinking=enable_thinking,
@@ -1225,7 +1234,7 @@ def main() -> None:
                 outer_type=outer_rt_type,
                 latent_steps=args.latent_steps,
                 batch_size=args.batch_size,
-                device=device,
+                device=reflector_device,
                 model_dtype=model_dtype,
                 outer_dtype=outer_dtype,
                 trust_remote_code=trust_remote_code,
@@ -1251,7 +1260,7 @@ def main() -> None:
                     do_sample=args.do_sample,
                     temperature=args.temperature,
                     top_p=args.top_p,
-                    device=device,
+                    device=toolcaller_device,
                     dtype=model_dtype,
                     trust_remote_code=trust_remote_code,
                     enable_thinking=enable_thinking,
@@ -1270,7 +1279,7 @@ def main() -> None:
                     outer_type=outer_tr_type,
                     latent_steps=args.latent_steps,
                     batch_size=args.batch_size,
-                    device=device,
+                    device=toolcaller_device,
                     model_dtype=model_dtype,
                     outer_dtype=outer_dtype,
                     trust_remote_code=trust_remote_code,
@@ -1290,7 +1299,7 @@ def main() -> None:
             outputs=final_outputs,
             dataset_name=dataset_name,
             batch_size=args.batch_size,
-            device=device,
+            device=toolcaller_device,
             dtype=model_dtype,
             trust_remote_code=trust_remote_code,
             do_sample=args.do_sample,
@@ -1327,7 +1336,7 @@ def main() -> None:
                     do_sample=args.do_sample,
                     temperature=args.temperature,
                     top_p=args.top_p,
-                    device=device,
+                    device=reflector_device,
                     dtype=model_dtype,
                     trust_remote_code=trust_remote_code,
                     enable_thinking=enable_thinking,
@@ -1347,7 +1356,7 @@ def main() -> None:
                     do_sample=args.do_sample,
                     temperature=args.temperature,
                     top_p=args.top_p,
-                    device=device,
+                    device=toolcaller_device,
                     dtype=model_dtype,
                     trust_remote_code=trust_remote_code,
                     enable_thinking=enable_thinking,
@@ -1364,7 +1373,7 @@ def main() -> None:
                     do_sample=args.do_sample,
                     temperature=args.temperature,
                     top_p=args.top_p,
-                    device=device,
+                    device=toolcaller_device,
                     dtype=model_dtype,
                     trust_remote_code=trust_remote_code,
                     enable_thinking=enable_thinking,
@@ -1379,7 +1388,7 @@ def main() -> None:
                     outputs=rollout_outputs,
                     dataset_name=dataset_name,
                     batch_size=args.batch_size,
-                    device=device,
+                    device=toolcaller_device,
                     dtype=model_dtype,
                     trust_remote_code=trust_remote_code,
                     do_sample=args.do_sample,
