@@ -1816,7 +1816,7 @@ def build_ui() -> gr.Blocks:
                         _visible = False  # hidden until checkbox enabled
                         _label = f"**{_init_roles[_i][1]}** (`{_init_roles[_i][0]}`)" if _i < len(_init_roles) else ""
                         with gr.Row(visible=_visible) as _mg_row:
-                            _mg_lbl = gr.Markdown(_label, min_width=140)
+                            _mg_lbl = gr.Markdown(_label)
                             _mg_dev = gr.Dropdown(
                                 choices=all_devs,
                                 value=all_devs[0] if all_devs else "cpu",
