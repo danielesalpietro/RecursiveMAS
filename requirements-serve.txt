@@ -2,3 +2,8 @@
 # Install alongside requirements.txt:
 #   pip install -r requirements.txt -r requirements-serve.txt
 gradio>=4.0.0
+
+# Optional — only needed if post-processing LLM backends are used:
+#   Claude (Anthropic API):                  pip install anthropic
+#   Gemini (Google AI):                      pip install google-generativeai
+#   OpenAI-compatible (vLLM/Ollama/etc.):    pip install openai

@@ -252,9 +252,49 @@ def _build_reply(
     parsed: str,
     stdout: str,
     run_info: Optional[Dict] = None,
+    pp_result: Optional[str] = None,
 ) -> str:
     agents = _parse_agent_outputs(stdout)
-    parts: List[str] = [f"**Style:** `{style}`"]
+
+    # ── Post-processed response (when enabled) ────────────────────────────────
+    if pp_result and not pp_result.startswith("⚠️"):
+        parts: List[str] = [pp_result]
+        # Collapse the raw MAS output for reference
+        raw_parts = [f"**Style:** `{style}`"]
+        if parsed:
+            raw_parts.append(f"**Extracted answer:** `{parsed}`")
+        solver_text = agents.get("agent3", "")
+        if solver_text:
+            raw_parts.append("**Solver output:**\n" + solver_text)
+        for key, label in [("agent1", "Planner"), ("agent2", "Critic / Refiner")]:
+            text = agents.get(key, "")
+            if text:
+                raw_parts.append(
+                    f"<details><summary>{label} output</summary>\n\n{text}\n\n</details>"
+                )
+        parts.append(
+            f"\n<details><summary>🤖 MAS raw output</summary>\n\n"
+            + "\n".join(raw_parts)
+            + "\n\n</details>"
+        )
+        if run_info:
+            pp_label = run_info.get("pp_backend", "")
+            pp_model = run_info.get("pp_model", "")
+            info = (
+                f"| Parameter | Value |\n"
+                f"|-----------|-------|\n"
+                f"| Version | `v{run_info['version']}` |\n"
+                f"| Style | `{run_info['style']}` |\n"
+                f"| Post-processing | `{pp_label}` / `{pp_model}` |\n"
+                f"| Elapsed (MAS) | {run_info['elapsed']} |"
+            )
+            parts.append(f"\n<details><summary>Run info</summary>\n\n{info}\n\n</details>")
+        return "\n\n".join(parts)
+
+    # ── Standard output (no post-processing) ─────────────────────────────────
+    parts = [f"**Style:** `{style}`"]
+    if pp_result:  # error message
+        parts.append(pp_result)
 
     if parsed:
         parts.append(f"\n**Answer:** `{parsed}`")
@@ -263,7 +303,6 @@ def _build_reply(
     if solver_text:
         parts.append("\n---\n**Solver output:**\n" + solver_text)
 
-    # Wrap intermediate agent outputs in collapsible details
     for key, label in [("agent1", "Planner"), ("agent2", "Critic / Refiner")]:
         text = agents.get(key, "")
         if text:
@@ -307,6 +346,10 @@ def respond(
     top_p: float,
     seed: int,
     device_map_state: Optional[Dict] = None,
+    pp_backend: str = "Disabled",
+    pp_endpoint: str = "",
+    pp_model: str = "",
+    pp_api_key: str = "",
 ) -> Tuple[List[Dict], List[Dict], str]:
     global _CURRENT_STYLE
 
@@ -334,7 +377,20 @@ def respond(
             device_map=device_map,
         )
         t_end = datetime.now()
-        elapsed = str(t_end - t_start).split(".")[0]  # HH:MM:SS
+        elapsed = str(t_end - t_start).split(".")[0]
+
+        agents = _parse_agent_outputs(stdout)
+        pp_result = _postprocess_with_llm(
+            question=message,
+            style=style,
+            agents=agents,
+            parsed=parsed,
+            backend_label=pp_backend,
+            endpoint=pp_endpoint,
+            model=pp_model,
+            api_key=pp_api_key,
+        )
+
         run_info = {
             "version": _VERSION,
             "style": style,
@@ -345,11 +401,13 @@ def respond(
             "temperature": temperature,
             "top_p": top_p,
             "seed": seed,
+            "pp_backend": pp_backend,
+            "pp_model": pp_model or "default",
             "started": t_start.strftime("%Y-%m-%d %H:%M:%S"),
             "finished": t_end.strftime("%Y-%m-%d %H:%M:%S"),
             "elapsed": elapsed,
         }
-        reply = _build_reply(style, parsed, stdout, run_info)
+        reply = _build_reply(style, parsed, stdout, run_info, pp_result=pp_result)
     except Exception as exc:
         reply = f"❌ Error during inference:\n```\n{exc}\n```"
 
@@ -1164,6 +1222,95 @@ def _mg_apply(style: str, enabled: bool, dev0: str, dev1: str, dev2: str, dev3: 
     return new_state, "\n".join(status_lines)
 
 
+# ── LLM post-processing ───────────────────────────────────────────────────────
+
+_PP_PROMPT_TEMPLATE = """\
+A multi-agent reasoning system analyzed the following question using {style} collaboration.
+
+**Question:** {question}
+
+**Agent analysis:**
+{agent_section}
+**Extracted answer:** {parsed}
+
+Based on this multi-agent analysis, provide a clear, well-structured, comprehensive response \
+to the question. Do not repeat the agent outputs verbatim — synthesize them into a coherent answer.\
+"""
+
+_PP_BACKEND_LABELS = {
+    "Disabled":                                         "none",
+    "Claude (Anthropic API)":                           "anthropic",
+    "Gemini (Google AI)":                               "gemini",
+    "OpenAI-compatible (vLLM / Ollama / AnythingLLM)": "openai_compat",
+}
+
+
+def _postprocess_with_llm(
+    question: str,
+    style: str,
+    agents: Dict[str, str],
+    parsed: str,
+    backend_label: str,
+    endpoint: str,
+    model: str,
+    api_key: str,
+) -> Optional[str]:
+    """Post-process MAS output with an external LLM. Returns None if disabled or on error."""
+    backend = _PP_BACKEND_LABELS.get(backend_label, "none")
+    if backend == "none":
+        return None
+
+    agent_section = ""
+    for key, label in [("agent1", "Planner"), ("agent2", "Critic/Refiner"), ("agent3", "Solver")]:
+        text = agents.get(key, "").strip()
+        if text:
+            agent_section += f"- **{label}:** {text[:1200]}\n\n"
+
+    prompt = _PP_PROMPT_TEMPLATE.format(
+        style=style,
+        question=question,
+        agent_section=agent_section or "(intermediate outputs not captured)\n\n",
+        parsed=parsed or "(not extracted)",
+    )
+
+    try:
+        if backend == "anthropic":
+            import anthropic as _ant
+            key = api_key.strip() or os.environ.get("ANTHROPIC_API_KEY", "")
+            client = _ant.Anthropic(api_key=key)
+            msg = client.messages.create(
+                model=model.strip() or "claude-haiku-4-5-20251001",
+                max_tokens=2048,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return msg.content[0].text
+
+        if backend == "gemini":
+            import google.generativeai as _genai  # type: ignore
+            key = api_key.strip() or os.environ.get("GEMINI_API_KEY", "")
+            _genai.configure(api_key=key)
+            m = _genai.GenerativeModel(model.strip() or "gemini-2.0-flash")
+            return m.generate_content(prompt).text
+
+        if backend == "openai_compat":
+            from openai import OpenAI as _OAI  # type: ignore
+            key = api_key.strip() or os.environ.get("OPENAI_API_KEY", "none")
+            base = endpoint.strip() or "http://localhost:8000/v1"
+            client = _OAI(api_key=key, base_url=base)
+            resp = client.chat.completions.create(
+                model=model.strip() or "default",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=2048,
+            )
+            return resp.choices[0].message.content
+
+    except Exception as exc:
+        _log_write(f"[postproc] {backend} error: {exc}\n")
+        return f"⚠️ Post-processing failed ({backend}): {exc}"
+
+    return None
+
+
 # ── Gradio layout ─────────────────────────────────────────────────────────────
 
 
@@ -1243,6 +1390,48 @@ def build_ui() -> gr.Blocks:
                                 info="Fixed seed for reproducible outputs (integer)",
                             )
 
+                        with gr.Accordion("🤖 Post-processing LLM", open=False):
+                            gr.Markdown(
+                                "Pipe the MAS output through an external LLM for a cleaner, "
+                                "synthesized response.  \n"
+                                "API keys can also be set in `.env` "
+                                "(`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`)."
+                            )
+                            pp_backend_dd = gr.Dropdown(
+                                choices=list(_PP_BACKEND_LABELS.keys()),
+                                value="Disabled",
+                                label="Backend",
+                            )
+                            with gr.Group(visible=False) as pp_cfg_group:
+                                pp_endpoint_txt = gr.Textbox(
+                                    label="Endpoint URL",
+                                    placeholder="http://localhost:8000/v1",
+                                    visible=False,
+                                    scale=3,
+                                )
+                                pp_model_txt = gr.Textbox(
+                                    label="Model",
+                                    placeholder="claude-haiku-4-5-20251001 / gemini-2.0-flash / llama3",
+                                    value="",
+                                )
+                                pp_key_txt = gr.Textbox(
+                                    label="API key (leave blank to use .env)",
+                                    placeholder="sk-…",
+                                    type="password",
+                                    value="",
+                                )
+
+                            def _pp_backend_change(backend):
+                                active = backend != "Disabled"
+                                compat = "OpenAI" in backend
+                                return gr.update(visible=active), gr.update(visible=compat)
+
+                            pp_backend_dd.change(
+                                _pp_backend_change,
+                                inputs=[pp_backend_dd],
+                                outputs=[pp_cfg_group, pp_endpoint_txt],
+                            )
+
                     with gr.Column(scale=3):
                         chatbot = gr.Chatbot(height=520, label="", show_label=False)
                         with gr.Row():
@@ -1262,6 +1451,8 @@ def build_ui() -> gr.Blocks:
                             rounds_sl, latent_sl, device_dd,
                             temperature_sl, top_p_sl, seed_num,
                             device_map_state,
+                            pp_backend_dd, pp_endpoint_txt,
+                            pp_model_txt, pp_key_txt,
                         ],
                         outputs=[chatbot, state, msg],
                     )
