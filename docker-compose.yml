@@ -42,6 +42,10 @@ services:
     environment:
       - HF_TOKEN=${HF_TOKEN:-}
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - OPENAI_COMPAT_ENDPOINT=${OPENAI_COMPAT_ENDPOINT:-}
+      - OPENAI_COMPAT_MODEL=${OPENAI_COMPAT_MODEL:-}
     volumes:
       - hf_cache:/hf_cache
     ports:

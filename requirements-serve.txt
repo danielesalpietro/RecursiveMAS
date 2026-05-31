@@ -3,7 +3,8 @@
 #   pip install -r requirements.txt -r requirements-serve.txt
 gradio>=4.0.0
 
-# Optional — only needed if post-processing LLM backends are used:
-#   Claude (Anthropic API):                  pip install anthropic
-#   Gemini (Google AI):                      pip install google-generativeai
-#   OpenAI-compatible (vLLM/Ollama/etc.):    pip install openai
+# LLM Enhancement backends (pre/post-processing) — all lightweight, no GPU needed
+# Imported lazily: unused backends add zero overhead at runtime
+anthropic>=0.40.0
+google-generativeai>=0.8.0
+openai>=1.50.0
