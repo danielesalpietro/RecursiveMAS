@@ -253,6 +253,7 @@ def _build_reply(
     stdout: str,
     run_info: Optional[Dict] = None,
     pp_result: Optional[str] = None,
+    pre_query: Optional[str] = None,
 ) -> str:
     agents = _parse_agent_outputs(stdout)
 
@@ -261,6 +262,8 @@ def _build_reply(
         parts: List[str] = [pp_result]
         # Collapse the raw MAS output for reference
         raw_parts = [f"**Style:** `{style}`"]
+        if pre_query:
+            raw_parts.append(f"**Normalized query sent to MAS:** *{pre_query}*")
         if parsed:
             raw_parts.append(f"**Extracted answer:** `{parsed}`")
         solver_text = agents.get("agent3", "")
@@ -278,14 +281,15 @@ def _build_reply(
             + "\n\n</details>"
         )
         if run_info:
-            pp_label = run_info.get("pp_backend", "")
-            pp_model = run_info.get("pp_model", "")
+            llm_label = run_info.get("llm_backend", "")
+            llm_model = run_info.get("llm_model", "")
             info = (
                 f"| Parameter | Value |\n"
                 f"|-----------|-------|\n"
                 f"| Version | `v{run_info['version']}` |\n"
                 f"| Style | `{run_info['style']}` |\n"
-                f"| Post-processing | `{pp_label}` / `{pp_model}` |\n"
+                f"| LLM backend | `{llm_label}` / `{llm_model}` |\n"
+                f"| Pre-processing | {'✅' if pre_query else '—'} |\n"
                 f"| Elapsed (MAS) | {run_info['elapsed']} |"
             )
             parts.append(f"\n<details><summary>Run info</summary>\n\n{info}\n\n</details>")
@@ -293,7 +297,9 @@ def _build_reply(
 
     # ── Standard output (no post-processing) ─────────────────────────────────
     parts = [f"**Style:** `{style}`"]
-    if pp_result:  # error message
+    if pre_query:
+        parts.append(f"\n*Query normalized for MAS:* {pre_query}")
+    if pp_result:  # error message from failed post-proc
         parts.append(pp_result)
 
     if parsed:
@@ -346,10 +352,12 @@ def respond(
     top_p: float,
     seed: int,
     device_map_state: Optional[Dict] = None,
-    pp_backend: str = "Disabled",
-    pp_endpoint: str = "",
-    pp_model: str = "",
-    pp_api_key: str = "",
+    llm_backend: str = "Disabled",
+    llm_endpoint: str = "",
+    llm_model: str = "",
+    llm_api_key: str = "",
+    llm_pre_enabled: bool = False,
+    llm_post_enabled: bool = False,
 ) -> Tuple[List[Dict], List[Dict], str]:
     global _CURRENT_STYLE
 
@@ -368,28 +376,47 @@ def respond(
     _CURRENT_STYLE = style
 
     device_map = (device_map_state or {}).get(style)
+    effective_backend = llm_backend if llm_backend != "Disabled" else "Disabled"
+
+    # ── Pre-processing ────────────────────────────────────────────────────────
+    pre_query: Optional[str] = None
+    mas_question = message
+    if llm_pre_enabled and effective_backend != "Disabled":
+        mas_question, changed = _preprocess_question(
+            question=message,
+            style=style,
+            backend_label=effective_backend,
+            endpoint=llm_endpoint,
+            model=llm_model,
+            api_key=llm_api_key,
+        )
+        if changed:
+            pre_query = mas_question
 
     try:
         t_start = datetime.now()
         stdout, parsed = _run_single_question(
-            style, message, device, num_rounds, latent_steps, domain,
+            style, mas_question, device, num_rounds, latent_steps, domain,
             temperature=temperature, top_p=top_p, seed=seed,
             device_map=device_map,
         )
         t_end = datetime.now()
         elapsed = str(t_end - t_start).split(".")[0]
 
+        # ── Post-processing ───────────────────────────────────────────────────
         agents = _parse_agent_outputs(stdout)
-        pp_result = _postprocess_with_llm(
-            question=message,
-            style=style,
-            agents=agents,
-            parsed=parsed,
-            backend_label=pp_backend,
-            endpoint=pp_endpoint,
-            model=pp_model,
-            api_key=pp_api_key,
-        )
+        pp_result: Optional[str] = None
+        if llm_post_enabled and effective_backend != "Disabled":
+            pp_result = _postprocess_with_llm(
+                question=message,   # original question (user's language)
+                style=style,
+                agents=agents,
+                parsed=parsed,
+                backend_label=effective_backend,
+                endpoint=llm_endpoint,
+                model=llm_model,
+                api_key=llm_api_key,
+            )
 
         run_info = {
             "version": _VERSION,
@@ -401,13 +428,14 @@ def respond(
             "temperature": temperature,
             "top_p": top_p,
             "seed": seed,
-            "pp_backend": pp_backend,
-            "pp_model": pp_model or "default",
+            "llm_backend": effective_backend,
+            "llm_model": llm_model or "default",
             "started": t_start.strftime("%Y-%m-%d %H:%M:%S"),
             "finished": t_end.strftime("%Y-%m-%d %H:%M:%S"),
             "elapsed": elapsed,
         }
-        reply = _build_reply(style, parsed, stdout, run_info, pp_result=pp_result)
+        reply = _build_reply(style, parsed, stdout, run_info,
+                             pp_result=pp_result, pre_query=pre_query)
     except Exception as exc:
         reply = f"❌ Error during inference:\n```\n{exc}\n```"
 
@@ -1222,9 +1250,59 @@ def _mg_apply(style: str, enabled: bool, dev0: str, dev1: str, dev2: str, dev3: 
     return new_state, "\n".join(status_lines)
 
 
-# ── LLM post-processing ───────────────────────────────────────────────────────
+# ── LLM Enhancement (pre-processing + post-processing) ───────────────────────
 
-_PP_PROMPT_TEMPLATE = """\
+_LLM_BACKEND_LABELS = {
+    "Disabled":                                         "none",
+    "Claude (Anthropic API)":                           "anthropic",
+    "Gemini (Google AI)":                               "gemini",
+    "OpenAI-compatible (vLLM / Ollama / AnythingLLM)": "openai_compat",
+}
+
+# Style-family-specific system prompts for question pre-processing
+_PRE_PROMPTS: Dict[str, str] = {
+    "sequential": (
+        "You are preparing a question for a multi-agent system with a Planner → Critic → Solver pipeline.\n"
+        "Tasks (apply all that are relevant):\n"
+        "1. Translate to English if the input is in another language.\n"
+        "2. Remove ambiguity — make every term and constraint explicit.\n"
+        "3. State implicit assumptions as explicit conditions.\n"
+        "4. Structure the question to invite step-by-step reasoning.\n"
+        "Return ONLY the reformulated question — no preamble, no explanation."
+    ),
+    "mixture": (
+        "You are preparing a question for a system with parallel Math, Code, and Science specialists "
+        "coordinated by a Summarizer agent.\n"
+        "Tasks:\n"
+        "1. Translate to English if needed.\n"
+        "2. Identify which domains are involved (mathematics, programming, science/biology/physics/medicine).\n"
+        "3. Make each domain's sub-question explicit so each specialist gets a clear signal.\n"
+        "4. Keep the question concise and precise.\n"
+        "Return ONLY the reformulated question."
+    ),
+    "distillation": (
+        "You are preparing a question for an Expert → Learner knowledge-distillation system where a "
+        "large expert model guides a smaller learner.\n"
+        "Tasks:\n"
+        "1. Translate to English if needed.\n"
+        "2. State the problem with full precision: constraints, required output format, edge cases.\n"
+        "3. Make all implicit knowledge requirements explicit.\n"
+        "Return ONLY the reformulated question."
+    ),
+    "deliberation": (
+        "You are preparing a question for a Reflector → Toolcaller system that can invoke "
+        "web search and Python code execution.\n"
+        "Tasks:\n"
+        "1. Translate to English if needed.\n"
+        "2. Identify which parts require external lookup, which require computation, and which "
+        "require pure reasoning — label them if helpful.\n"
+        "3. If the question has multiple sub-tasks, enumerate them clearly.\n"
+        "4. Note any time-sensitivity or requirements for exact/recent data.\n"
+        "Return ONLY the reformulated question."
+    ),
+}
+
+_POST_PROMPT_TEMPLATE = """\
 A multi-agent reasoning system analyzed the following question using {style} collaboration.
 
 **Question:** {question}
@@ -1234,15 +1312,107 @@ A multi-agent reasoning system analyzed the following question using {style} col
 **Extracted answer:** {parsed}
 
 Based on this multi-agent analysis, provide a clear, well-structured, comprehensive response \
-to the question. Do not repeat the agent outputs verbatim — synthesize them into a coherent answer.\
+to the question. Synthesize the agents' reasoning into a coherent answer — do not repeat \
+agent outputs verbatim. If the question was originally in a language other than English, \
+respond in that same language.\
 """
 
-_PP_BACKEND_LABELS = {
-    "Disabled":                                         "none",
-    "Claude (Anthropic API)":                           "anthropic",
-    "Gemini (Google AI)":                               "gemini",
-    "OpenAI-compatible (vLLM / Ollama / AnythingLLM)": "openai_compat",
-}
+
+def _call_llm_backend(
+    system: str,
+    user: str,
+    backend: str,
+    endpoint: str,
+    model: str,
+    api_key: str,
+    tag: str = "llm",
+) -> Optional[str]:
+    """Shared low-level dispatcher for all LLM backends. Returns text or None."""
+    if backend == "anthropic":
+        import anthropic as _ant
+        key = api_key.strip() or os.environ.get("ANTHROPIC_API_KEY", "")
+        if not key or key == "sk-ant-your-key-here":
+            _log_write(f"[{tag}] anthropic skipped — ANTHROPIC_API_KEY not configured\n")
+            return None
+        client = _ant.Anthropic(api_key=key)
+        msg = client.messages.create(
+            model=model.strip() or "claude-haiku-4-5-20251001",
+            max_tokens=2048,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+        return msg.content[0].text
+
+    if backend == "gemini":
+        import google.generativeai as _genai  # type: ignore
+        key = api_key.strip() or os.environ.get("GEMINI_API_KEY", "")
+        if not key or key == "AIza-your-key-here":
+            _log_write(f"[{tag}] gemini skipped — GEMINI_API_KEY not configured\n")
+            return None
+        _genai.configure(api_key=key)
+        m = _genai.GenerativeModel(
+            model.strip() or "gemini-2.0-flash",
+            system_instruction=system,
+        )
+        return m.generate_content(user).text
+
+    if backend == "openai_compat":
+        from openai import OpenAI as _OAI  # type: ignore
+        key = api_key.strip() or os.environ.get("OPENAI_API_KEY", "none")
+        base = endpoint.strip() or os.environ.get("OPENAI_COMPAT_ENDPOINT", "") or "http://localhost:8000/v1"
+        mdl = model.strip() or os.environ.get("OPENAI_COMPAT_MODEL", "") or "default"
+        client = _OAI(api_key=key, base_url=base)
+        resp = client.chat.completions.create(
+            model=mdl,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            max_tokens=2048,
+        )
+        return resp.choices[0].message.content
+
+    return None
+
+
+def _preprocess_question(
+    question: str,
+    style: str,
+    backend_label: str,
+    endpoint: str,
+    model: str,
+    api_key: str,
+) -> Tuple[str, bool]:
+    """
+    Normalize and translate the question for the target style.
+    Returns (processed_question, was_changed).
+    Falls back to the original on any error — never blocks the pipeline.
+    """
+    backend = _LLM_BACKEND_LABELS.get(backend_label, "none")
+    if backend == "none":
+        return question, False
+    family = str(STYLE_SPECS.get(style, {}).get("family", "sequential"))
+    system_prompt = _PRE_PROMPTS.get(family, _PRE_PROMPTS["sequential"])
+    try:
+        result = _call_llm_backend(
+            system=system_prompt,
+            user=question,
+            backend=backend,
+            endpoint=endpoint,
+            model=model,
+            api_key=api_key,
+            tag="preproc",
+        )
+        if result and result.strip() and result.strip() != question.strip():
+            _log_write(
+                f"[preproc] {style}/{backend}: "
+                f"'{question[:50]}' → '{result.strip()[:50]}'\n"
+            )
+            return result.strip(), True
+        return question, False
+    except Exception as exc:
+        _log_write(f"[preproc] {backend} error: {exc}\n")
+        return question, False
 
 
 def _postprocess_with_llm(
@@ -1255,76 +1425,36 @@ def _postprocess_with_llm(
     model: str,
     api_key: str,
 ) -> Optional[str]:
-    """Post-process MAS output with an external LLM. Returns None if disabled or on error."""
-    backend = _PP_BACKEND_LABELS.get(backend_label, "none")
+    """Post-process MAS output. Returns None if disabled/unconfigured, error str on failure."""
+    backend = _LLM_BACKEND_LABELS.get(backend_label, "none")
     if backend == "none":
         return None
-
     agent_section = ""
     for key, label in [("agent1", "Planner"), ("agent2", "Critic/Refiner"), ("agent3", "Solver")]:
         text = agents.get(key, "").strip()
         if text:
             agent_section += f"- **{label}:** {text[:1200]}\n\n"
-
-    prompt = _PP_PROMPT_TEMPLATE.format(
+    user_prompt = _POST_PROMPT_TEMPLATE.format(
         style=style,
         question=question,
         agent_section=agent_section or "(intermediate outputs not captured)\n\n",
         parsed=parsed or "(not extracted)",
     )
-
     try:
-        if backend == "anthropic":
-            import anthropic as _ant
-            key = api_key.strip() or os.environ.get("ANTHROPIC_API_KEY", "")
-            if not key or key == "sk-ant-your-key-here":
-                _log_write("[postproc] anthropic skipped — ANTHROPIC_API_KEY not configured\n")
-                return None
-            client = _ant.Anthropic(api_key=key)
-            msg = client.messages.create(
-                model=model.strip() or "claude-haiku-4-5-20251001",
-                max_tokens=2048,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            return msg.content[0].text
-
-        if backend == "gemini":
-            import google.generativeai as _genai  # type: ignore
-            key = api_key.strip() or os.environ.get("GEMINI_API_KEY", "")
-            if not key or key == "AIza-your-key-here":
-                _log_write("[postproc] gemini skipped — GEMINI_API_KEY not configured\n")
-                return None
-            _genai.configure(api_key=key)
-            m = _genai.GenerativeModel(model.strip() or "gemini-2.0-flash")
-            return m.generate_content(prompt).text
-
-        if backend == "openai_compat":
-            from openai import OpenAI as _OAI  # type: ignore
-            # Local servers typically don't require a real key
-            key = api_key.strip() or os.environ.get("OPENAI_API_KEY", "none")
-            base = (
-                endpoint.strip()
-                or os.environ.get("OPENAI_COMPAT_ENDPOINT", "")
-                or "http://localhost:8000/v1"
-            )
-            mdl = (
-                model.strip()
-                or os.environ.get("OPENAI_COMPAT_MODEL", "")
-                or "default"
-            )
-            client = _OAI(api_key=key, base_url=base)
-            resp = client.chat.completions.create(
-                model=mdl,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=2048,
-            )
-            return resp.choices[0].message.content
-
+        result = _call_llm_backend(
+            system="You are a helpful assistant that synthesizes multi-agent reasoning outputs.",
+            user=user_prompt,
+            backend=backend,
+            endpoint=endpoint,
+            model=model,
+            api_key=api_key,
+            tag="postproc",
+        )
+        return result
     except Exception as exc:
         _log_write(f"[postproc] {backend} error: {exc}\n")
         return f"⚠️ Post-processing failed ({backend}): {exc}"
 
-    return None
 
 
 # ── Gradio layout ─────────────────────────────────────────────────────────────
@@ -1406,60 +1536,70 @@ def build_ui() -> gr.Blocks:
                                 info="Fixed seed for reproducible outputs (integer)",
                             )
 
-                        with gr.Accordion("🤖 Post-processing LLM", open=False):
+                        with gr.Accordion("🤖 LLM Enhancement", open=False):
                             # Detect which backends are pre-configured via .env
-                            _pp_configured = {
+                            _llm_cfg = {
                                 "anthropic":    bool(os.environ.get("ANTHROPIC_API_KEY", "").strip()),
                                 "gemini":       bool(os.environ.get("GEMINI_API_KEY", "").strip()),
                                 "openai_compat": bool(os.environ.get("OPENAI_COMPAT_ENDPOINT", "").strip()),
                             }
-                            _pp_status_lines = [
-                                f"{'✅' if _pp_configured['anthropic']    else '⚪'} Claude (Anthropic) — "
-                                f"{'key loaded from `.env`' if _pp_configured['anthropic'] else 'set `ANTHROPIC_API_KEY` in `.env`'}",
-                                f"{'✅' if _pp_configured['gemini']       else '⚪'} Gemini — "
-                                f"{'key loaded from `.env`' if _pp_configured['gemini'] else 'set `GEMINI_API_KEY` in `.env`'}",
-                                f"{'✅' if _pp_configured['openai_compat'] else '⚪'} OpenAI-compatible — "
-                                f"{'endpoint loaded from `.env`' if _pp_configured['openai_compat'] else 'set `OPENAI_COMPAT_ENDPOINT` in `.env` or enter below'}",
-                            ]
+                            _llm_status = "\n".join([
+                                f"{'✅' if _llm_cfg['anthropic']    else '⚪'} Claude — "
+                                + ('key in `.env`' if _llm_cfg['anthropic'] else 'set `ANTHROPIC_API_KEY`'),
+                                f"{'✅' if _llm_cfg['gemini']       else '⚪'} Gemini — "
+                                + ('key in `.env`' if _llm_cfg['gemini'] else 'set `GEMINI_API_KEY`'),
+                                f"{'✅' if _llm_cfg['openai_compat'] else '⚪'} OpenAI-compatible — "
+                                + ('endpoint in `.env`' if _llm_cfg['openai_compat'] else 'set `OPENAI_COMPAT_ENDPOINT` or enter below'),
+                            ])
                             gr.Markdown(
-                                "Pipe the MAS output through an external LLM for a cleaner, "
-                                "synthesized response. Keys/endpoints are read from `.env` "
-                                "and can be overridden in the fields below.\n\n"
-                                + "\n".join(_pp_status_lines)
+                                "Enhance the pipeline with an external LLM — for pre-processing, "
+                                "post-processing, or both. Keys/endpoints are read from `.env`.\n\n"
+                                + _llm_status
                             )
-                            pp_backend_dd = gr.Dropdown(
-                                choices=list(_PP_BACKEND_LABELS.keys()),
+                            llm_backend_dd = gr.Dropdown(
+                                choices=list(_LLM_BACKEND_LABELS.keys()),
                                 value="Disabled",
                                 label="Backend",
                             )
-                            with gr.Group(visible=False) as pp_cfg_group:
-                                pp_endpoint_txt = gr.Textbox(
-                                    label="Endpoint URL",
+                            with gr.Group(visible=False) as llm_cfg_group:
+                                llm_endpoint_txt = gr.Textbox(
+                                    label="Endpoint URL (OpenAI-compatible only)",
                                     placeholder="http://localhost:8000/v1",
                                     value=os.environ.get("OPENAI_COMPAT_ENDPOINT", ""),
                                     visible=False,
                                 )
-                                pp_model_txt = gr.Textbox(
+                                llm_model_txt = gr.Textbox(
                                     label="Model",
                                     placeholder="claude-haiku-4-5-20251001 / gemini-2.0-flash / llama3",
                                     value=os.environ.get("OPENAI_COMPAT_MODEL", ""),
                                 )
-                                pp_key_txt = gr.Textbox(
+                                llm_key_txt = gr.Textbox(
                                     label="API key (leave blank to use .env)",
                                     placeholder="sk-…",
                                     type="password",
                                     value="",
                                 )
+                                with gr.Row():
+                                    llm_pre_cb = gr.Checkbox(
+                                        value=True,
+                                        label="Pre-process question",
+                                        info="Translate to English + normalize for the selected style",
+                                    )
+                                    llm_post_cb = gr.Checkbox(
+                                        value=True,
+                                        label="Post-process response",
+                                        info="Synthesize MAS output into a clear final answer",
+                                    )
 
-                            def _pp_backend_change(backend):
+                            def _llm_backend_change(backend):
                                 active = backend != "Disabled"
                                 compat = "OpenAI" in backend
                                 return gr.update(visible=active), gr.update(visible=compat)
 
-                            pp_backend_dd.change(
-                                _pp_backend_change,
-                                inputs=[pp_backend_dd],
-                                outputs=[pp_cfg_group, pp_endpoint_txt],
+                            llm_backend_dd.change(
+                                _llm_backend_change,
+                                inputs=[llm_backend_dd],
+                                outputs=[llm_cfg_group, llm_endpoint_txt],
                             )
 
                     with gr.Column(scale=3):
@@ -1481,8 +1621,9 @@ def build_ui() -> gr.Blocks:
                             rounds_sl, latent_sl, device_dd,
                             temperature_sl, top_p_sl, seed_num,
                             device_map_state,
-                            pp_backend_dd, pp_endpoint_txt,
-                            pp_model_txt, pp_key_txt,
+                            llm_backend_dd, llm_endpoint_txt,
+                            llm_model_txt, llm_key_txt,
+                            llm_pre_cb, llm_post_cb,
                         ],
                         outputs=[chatbot, state, msg],
                     )
