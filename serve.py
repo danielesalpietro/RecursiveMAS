@@ -1353,6 +1353,15 @@ def _list_models(backend_label: str, endpoint: str = "", api_key: str = "") -> L
 
 
 # Style-family-specific system prompts for question pre-processing
+_PRE_PROMPT_COMMON_RULES = (
+    "General rules (always apply):\n"
+    "- Do NOT solve the question or reveal any part of the answer.\n"
+    "- Do NOT add multiple-choice options (A/B/C/D) if the original question does not contain them.\n"
+    "- Do NOT add instructions like 'Choose the correct option' unless already present.\n"
+    "- Preserve mathematical notation: convert informal notation (e.g. 'x squared', 'e to the 3x') "
+    "to proper LaTeX ($x^2$, $e^{3x}$) but do not alter the mathematical content.\n"
+)
+
 _PRE_PROMPTS: Dict[str, str] = {
     "sequential": (
         "You are preparing a question for a multi-agent system with a Planner → Critic → Solver pipeline.\n"
@@ -1361,7 +1370,8 @@ _PRE_PROMPTS: Dict[str, str] = {
         "2. Remove ambiguity — make every term and constraint explicit.\n"
         "3. State implicit assumptions as explicit conditions.\n"
         "4. Structure the question to invite step-by-step reasoning.\n"
-        "Return ONLY the reformulated question — no preamble, no explanation."
+        + _PRE_PROMPT_COMMON_RULES
+        + "Return ONLY the reformulated question — no preamble, no explanation."
     ),
     "mixture": (
         "You are preparing a question for a system with parallel Math, Code, and Science specialists "
@@ -1371,7 +1381,8 @@ _PRE_PROMPTS: Dict[str, str] = {
         "2. Identify which domains are involved (mathematics, programming, science/biology/physics/medicine).\n"
         "3. Make each domain's sub-question explicit so each specialist gets a clear signal.\n"
         "4. Keep the question concise and precise.\n"
-        "Return ONLY the reformulated question."
+        + _PRE_PROMPT_COMMON_RULES
+        + "Return ONLY the reformulated question."
     ),
     "distillation": (
         "You are preparing a question for an Expert → Learner knowledge-distillation system where a "
@@ -1380,7 +1391,8 @@ _PRE_PROMPTS: Dict[str, str] = {
         "1. Translate to English if needed.\n"
         "2. State the problem with full precision: constraints, required output format, edge cases.\n"
         "3. Make all implicit knowledge requirements explicit.\n"
-        "Return ONLY the reformulated question."
+        + _PRE_PROMPT_COMMON_RULES
+        + "Return ONLY the reformulated question."
     ),
     "deliberation": (
         "You are preparing a question for a Reflector → Toolcaller system that can invoke "
@@ -1391,7 +1403,8 @@ _PRE_PROMPTS: Dict[str, str] = {
         "require pure reasoning — label them if helpful.\n"
         "3. If the question has multiple sub-tasks, enumerate them clearly.\n"
         "4. Note any time-sensitivity or requirements for exact/recent data.\n"
-        "Return ONLY the reformulated question."
+        + _PRE_PROMPT_COMMON_RULES
+        + "Return ONLY the reformulated question."
     ),
 }
 
