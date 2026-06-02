@@ -1395,6 +1395,21 @@ _PRE_PROMPTS: Dict[str, str] = {
     ),
 }
 
+_PRE_PROMPT_MCQ_SUFFIX = (
+    "\n\nIMPORTANT — this is a multiple-choice question:\n"
+    "- Preserve all answer options (A, B, C, D…) exactly as written.\n"
+    "- Do NOT compute, solve, or hint at intermediate steps.\n"
+    "- Do NOT indicate which option is likely correct.\n"
+    "- Only clarify and translate the question stem; leave the options unchanged."
+)
+
+
+def _is_mcq(question: str) -> bool:
+    """Detect multiple-choice questions by presence of labelled options."""
+    import re as _re
+    return bool(_re.search(r"(?:^|\n)\s*[A-D]\s*[\)\.]\s*\S", question, _re.MULTILINE))
+
+
 _POST_PROMPT_TEMPLATE = """\
 A multi-agent reasoning system analyzed the following question using {style} collaboration.
 
@@ -1486,6 +1501,8 @@ def _preprocess_question(
         return question, False
     family = str(STYLE_SPECS.get(style, {}).get("family", "sequential"))
     system_prompt = _PRE_PROMPTS.get(family, _PRE_PROMPTS["sequential"])
+    if _is_mcq(question):
+        system_prompt = system_prompt + _PRE_PROMPT_MCQ_SUFFIX
     try:
         result = _call_llm_backend(
             system=system_prompt,
