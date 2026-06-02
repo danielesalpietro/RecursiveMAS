@@ -376,10 +376,12 @@ def respond(
     llm_backend: str = "Disabled",
     llm_endpoint: str = "",
     llm_model: str = "",
+    llm_model_custom: str = "",
     llm_api_key: str = "",
     llm_pre_enabled: bool = False,
     llm_post_enabled: bool = False,
 ) -> Tuple[List[Dict], List[Dict], str]:
+    llm_model = llm_model_custom.strip() if llm_model == _LLM_CUSTOM_SENTINEL else llm_model
     global _CURRENT_STYLE
 
     if not message.strip():
@@ -1282,6 +1284,74 @@ _LLM_BACKEND_LABELS = {
     "OpenAI-compatible (vLLM / Ollama / AnythingLLM)": "openai_compat",
 }
 
+_LLM_MODEL_FALLBACKS: Dict[str, List[str]] = {
+    "anthropic": [
+        "claude-opus-4-8",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5-20251001",
+        "claude-3-5-sonnet-20241022",
+        "claude-3-5-haiku-20241022",
+    ],
+    "gemini": [
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-thinking-exp",
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-8b",
+        "gemini-1.5-pro",
+    ],
+    "openai_compat": [],
+}
+
+_LLM_CUSTOM_SENTINEL = "✏️ Custom model…"
+
+
+def _list_models(backend_label: str, endpoint: str = "", api_key: str = "") -> List[str]:
+    """Query the provider API for available models. Returns fallback list on any error."""
+    backend = _LLM_BACKEND_LABELS.get(backend_label, "none")
+    fallback = list(_LLM_MODEL_FALLBACKS.get(backend, []))
+
+    if backend == "none":
+        return []
+
+    try:
+        if backend == "anthropic":
+            key = (api_key.strip() or os.environ.get("ANTHROPIC_API_KEY", "")).strip()
+            if not key or "your" in key:
+                return fallback + [_LLM_CUSTOM_SENTINEL]
+            import anthropic as _ant
+            client = _ant.Anthropic(api_key=key)
+            names = sorted([m.id for m in client.models.list().data], reverse=True)
+            return names + [_LLM_CUSTOM_SENTINEL]
+
+        elif backend == "gemini":
+            key = (api_key.strip() or os.environ.get("GEMINI_API_KEY", "")).strip()
+            if not key or "your" in key:
+                return fallback + [_LLM_CUSTOM_SENTINEL]
+            import google.generativeai as _genai
+            _genai.configure(api_key=key)
+            names = sorted(
+                [m.name.removeprefix("models/") for m in _genai.list_models()
+                 if "generateContent" in (m.supported_generation_methods or [])],
+                reverse=True,
+            )
+            return names + [_LLM_CUSTOM_SENTINEL]
+
+        elif backend == "openai_compat":
+            ep = (endpoint.strip() or os.environ.get("OPENAI_COMPAT_ENDPOINT", "")).strip()
+            if not ep:
+                return [_LLM_CUSTOM_SENTINEL]
+            key = api_key.strip() or os.environ.get("OPENAI_COMPAT_API_KEY", "dummy") or "dummy"
+            import openai as _oai
+            client = _oai.OpenAI(base_url=ep, api_key=key)
+            names = sorted([m.id for m in client.models.list().data])
+            return names + [_LLM_CUSTOM_SENTINEL]
+
+    except Exception:
+        pass
+
+    return fallback + [_LLM_CUSTOM_SENTINEL]
+
+
 # Style-family-specific system prompts for question pre-processing
 _PRE_PROMPTS: Dict[str, str] = {
     "sequential": (
@@ -1591,16 +1661,25 @@ def build_ui() -> gr.Blocks:
                                     value=os.environ.get("OPENAI_COMPAT_ENDPOINT", ""),
                                     visible=False,
                                 )
-                                llm_model_txt = gr.Textbox(
-                                    label="Model",
-                                    placeholder="claude-haiku-4-5-20251001 / gemini-2.0-flash / llama3",
-                                    value=os.environ.get("OPENAI_COMPAT_MODEL", ""),
-                                )
                                 llm_key_txt = gr.Textbox(
                                     label="API key (leave blank to use .env)",
                                     placeholder="sk-…",
                                     type="password",
                                     value="",
+                                )
+                                with gr.Row():
+                                    llm_model_dd = gr.Dropdown(
+                                        choices=[],
+                                        value=None,
+                                        label="Model",
+                                        scale=5,
+                                    )
+                                    llm_refresh_btn = gr.Button("🔄", scale=1)
+                                llm_model_custom_txt = gr.Textbox(
+                                    label="Custom model ID",
+                                    placeholder="e.g. claude-3-haiku-20240307",
+                                    value=os.environ.get("OPENAI_COMPAT_MODEL", ""),
+                                    visible=False,
                                 )
                                 with gr.Row():
                                     llm_pre_cb = gr.Checkbox(
@@ -1614,15 +1693,41 @@ def build_ui() -> gr.Blocks:
                                         info="Synthesize MAS output into a clear final answer",
                                     )
 
-                            def _llm_backend_change(backend):
+                            def _llm_backend_change(backend, endpoint, key):
                                 active = backend != "Disabled"
                                 compat = "OpenAI" in backend
-                                return gr.update(visible=active), gr.update(visible=compat)
+                                models = _list_models(backend, endpoint, key) if active else []
+                                default = models[0] if models else None
+                                show_custom = (default == _LLM_CUSTOM_SENTINEL)
+                                return (
+                                    gr.update(visible=active),
+                                    gr.update(visible=compat),
+                                    gr.update(choices=models, value=default),
+                                    gr.update(visible=show_custom),
+                                )
+
+                            def _llm_refresh(backend, endpoint, key):
+                                models = _list_models(backend, endpoint, key)
+                                default = models[0] if models else None
+                                return gr.update(choices=models, value=default)
+
+                            def _llm_model_change(model):
+                                return gr.update(visible=model == _LLM_CUSTOM_SENTINEL)
 
                             llm_backend_dd.change(
                                 _llm_backend_change,
-                                inputs=[llm_backend_dd],
-                                outputs=[llm_cfg_group, llm_endpoint_txt],
+                                inputs=[llm_backend_dd, llm_endpoint_txt, llm_key_txt],
+                                outputs=[llm_cfg_group, llm_endpoint_txt, llm_model_dd, llm_model_custom_txt],
+                            )
+                            llm_refresh_btn.click(
+                                _llm_refresh,
+                                inputs=[llm_backend_dd, llm_endpoint_txt, llm_key_txt],
+                                outputs=[llm_model_dd],
+                            )
+                            llm_model_dd.change(
+                                _llm_model_change,
+                                inputs=[llm_model_dd],
+                                outputs=[llm_model_custom_txt],
                             )
 
                     with gr.Column(scale=3):
@@ -1645,7 +1750,7 @@ def build_ui() -> gr.Blocks:
                             temperature_sl, top_p_sl, seed_num,
                             device_map_state,
                             llm_backend_dd, llm_endpoint_txt,
-                            llm_model_txt, llm_key_txt,
+                            llm_model_dd, llm_model_custom_txt, llm_key_txt,
                             llm_pre_cb, llm_post_cb,
                         ],
                         outputs=[chatbot, state, msg],
