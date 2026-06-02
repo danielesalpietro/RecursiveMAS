@@ -1354,12 +1354,15 @@ def _list_models(backend_label: str, endpoint: str = "", api_key: str = "") -> L
 
 # Style-family-specific system prompts for question pre-processing
 _PRE_PROMPT_COMMON_RULES = (
-    "General rules (always apply):\n"
-    "- Do NOT solve the question or reveal any part of the answer.\n"
+    "General rules (always apply, no exceptions):\n"
+    "- Do NOT solve the question, compute intermediate steps, or reveal any part of the answer.\n"
     "- Do NOT add multiple-choice options (A/B/C/D) if the original question does not contain them.\n"
-    "- Do NOT add instructions like 'Choose the correct option' unless already present.\n"
+    "- Do NOT add phrases like 'Choose the correct option', 'Select one of', or similar MCQ instructions "
+    "unless they are already present verbatim in the original question.\n"
+    "- Do NOT enumerate solution steps ('Step 1: ...', 'To solve this: 1. ...'). Only restate the question.\n"
     "- Preserve mathematical notation: convert informal notation (e.g. 'x squared', 'e to the 3x') "
     "to proper LaTeX ($x^2$, $e^{3x}$) but do not alter the mathematical content.\n"
+    "- Your output must be a question, not a solution outline.\n"
 )
 
 _PRE_PROMPTS: Dict[str, str] = {
