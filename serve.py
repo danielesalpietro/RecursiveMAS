@@ -902,7 +902,7 @@ _STYLE_DESCRIPTIONS: Dict[str, str] = {
         "Lightweight pipeline — ideal for math and step-by-step reasoning."
     ),
     "sequential_scaled": (
-        "**Planner → Critic → Solver** with larger models (~12 GB VRAM).  \n"
+        "**Planner → Critic → Solver** with larger models (~23 GB VRAM).  \n"
         "Same pipeline as Light but higher accuracy on complex tasks."
     ),
     "mixture": (
@@ -983,7 +983,7 @@ _ARCH_HTML = """
     <div class="ag out"><div class="m">&nbsp;</div><div class="r">Answer</div></div>
   </div>
   <div class="fb">↺ multi-round: Solver latent → RL → Planner (next round)</div>
-  <div class="tags"><span class="tag">≈ 12 GB VRAM</span><span class="tag">Math · Complex reasoning</span><span class="tag">~11B total params</span></div>
+  <div class="tags"><span class="tag">≈ 23 GB VRAM</span><span class="tag">Math · Complex reasoning</span><span class="tag">~11B total params</span></div>
 </div>
 <hr class="s">
 
@@ -1070,7 +1070,7 @@ _STYLE_AGENT_ROLES: Dict[str, List[Tuple[str, str]]] = {
 # Approximate per-agent VRAM at bfloat16 (GB) — used for pre-check warnings
 _AGENT_VRAM_GB: Dict[str, Dict[str, float]] = {
     "sequential_light":  {"planner": 1.5, "critic": 1.0, "solver": 1.8},
-    "sequential_scaled": {"planner": 3.5, "critic": 2.5, "solver": 3.5},
+    "sequential_scaled": {"planner": 8.1, "critic": 6.1, "solver": 7.9},
     "mixture":           {"math": 1.5, "code": 2.5, "science": 5.5, "summarizer": 1.5},
     "distillation":      {"expert": 8.0, "learner": 3.5},
     "deliberation":      {"reflector": 3.5, "toolcaller": 3.5},
@@ -1079,7 +1079,7 @@ _AGENT_VRAM_GB: Dict[str, Dict[str, float]] = {
 # Approximate total VRAM per style (GB) — shown in Chat tab
 _STYLE_VRAM_GB: Dict[str, float] = {
     "sequential_light": 5.0,
-    "sequential_scaled": 12.0,
+    "sequential_scaled": 23.0,
     "mixture": 15.0,
     "distillation": 18.0,
     "deliberation": 12.0,
