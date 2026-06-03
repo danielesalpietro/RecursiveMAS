@@ -1067,23 +1067,18 @@ _STYLE_AGENT_ROLES: Dict[str, List[Tuple[str, str]]] = {
     "deliberation":      [("reflector", "Reflector"), ("toolcaller", "Toolcaller")],
 }
 
-# Approximate per-agent VRAM at bfloat16 (GB) — used for pre-check warnings
-_AGENT_VRAM_GB: Dict[str, Dict[str, float]] = {
-    "sequential_light":  {"planner": 1.5, "critic": 1.0, "solver": 1.8},
-    "sequential_scaled": {"planner": 8.1, "critic": 6.1, "solver": 7.9},
-    "mixture":           {"math": 1.5, "code": 2.5, "science": 5.5, "summarizer": 1.5},
-    "distillation":      {"expert": 8.0, "learner": 3.5},
-    "deliberation":      {"reflector": 3.5, "toolcaller": 3.5},
-}
+def _agent_vram_gb() -> Dict[str, Dict[str, float]]:
+    """Per-agent VRAM (GB) read from the local HF cache; returns 0 for uncached repos."""
+    cached = _get_cached_repos()
+    result: Dict[str, Dict[str, float]] = {}
+    for style_name, role, repo_id in _all_model_repos():
+        result.setdefault(style_name, {})[role] = cached.get(repo_id, 0) / 1024 ** 3
+    return result
 
-# Approximate total VRAM per style (GB) — shown in Chat tab
-_STYLE_VRAM_GB: Dict[str, float] = {
-    "sequential_light": 5.0,
-    "sequential_scaled": 23.0,
-    "mixture": 15.0,
-    "distillation": 18.0,
-    "deliberation": 12.0,
-}
+
+def _style_vram_gb() -> Dict[str, float]:
+    """Total per-style VRAM (GB) summed from local HF cache sizes."""
+    return {style: sum(roles.values()) for style, roles in _agent_vram_gb().items()}
 
 
 def _available_devices() -> List[str]:
@@ -1117,7 +1112,7 @@ def _vram_status_md(device: str, style: str) -> str:
     if device not in info:
         return "<small>VRAM info unavailable.</small>"
     free, total = info[device]
-    needed = _STYLE_VRAM_GB.get(style, 0.0)
+    needed = _style_vram_gb().get(style, 0.0)
     pct_used = (total - free) / total * 100 if total > 0 else 0
     icon = "🔴" if free < needed else "🟡" if free < needed * 1.25 else "🟢"
     line = f"{icon} **{device}**: {free:.1f} GB free / {total:.1f} GB &nbsp;({pct_used:.0f}% used)"
@@ -1260,7 +1255,7 @@ def _mg_apply(style: str, enabled: bool, dev0: str, dev1: str, dev2: str, dev3: 
 
     # Per-agent VRAM check
     vram = _vram_info()
-    agent_vrams = _AGENT_VRAM_GB.get(style, {})
+    agent_vrams = _agent_vram_gb().get(style, {})
     for i, (role, lbl) in enumerate(roles):
         dev = devs[i]
         needed = agent_vrams.get(role, 0.0)
