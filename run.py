@@ -174,6 +174,11 @@ def resolve_style_paths(style: str, dataset: str) -> Dict[str, Path]:
         out["outer_tr"] = outer_paths["outer_tr"]
         return out
 
+    if family == "text_sequential":
+        for key in ["planner", "critic", "solver"]:
+            out[key] = materialize(key)
+        return out
+
     raise ValueError(f"Unsupported style family: {family}")
 
 
@@ -255,6 +260,10 @@ def _append_device_map(cli: List[str], family: str, device_map: Optional[Dict[st
                 cli.extend([flag, device_map[key]])
     elif family == "deliberation":
         for flag, key in [("--reflector_device", "reflector"), ("--toolcaller_device", "toolcaller")]:
+            if key in device_map:
+                cli.extend([flag, device_map[key]])
+    elif family == "text_sequential":
+        for flag, key in [("--agent1_device", "planner"), ("--agent2_device", "critic"), ("--agent3_device", "solver")]:
             if key in device_map:
                 cli.extend([flag, device_map[key]])
 
@@ -349,6 +358,18 @@ def build_cli_for_style(
         cli.append("--quiet_tools")
         _append_device_map(cli, family, device_map)
         return inference_mas_deliberation, cli
+
+    if family == "text_sequential":
+        cli = [
+            "--method", "text_recursive",
+            "--mas_shape", "chain",
+            "--agent1_model_name_or_path", str(paths["planner"]),
+            "--agent2_model_name_or_path", str(paths["critic"]),
+            "--agent3_model_name_or_path", str(paths["solver"]),
+            "--solver_pre_question", "0",
+        ] + common
+        _append_device_map(cli, family, device_map)
+        return inference_mas, cli
 
     raise ValueError(f"Unsupported style family: {family}")
 

@@ -917,6 +917,10 @@ _STYLE_DESCRIPTIONS: Dict[str, str] = {
         "**Reflector → Toolcaller + external tools** (~12 GB VRAM).  \n"
         "Best for tasks that benefit from web search or code execution."
     ),
+    "sequential_text": (
+        "**Planner → Critic → Solver** via token exchange — no RecursiveLinks.  \n"
+        "Use any instruction-tuned model; defaults to the Light models (~9 GB VRAM)."
+    ),
 }
 
 _ARCH_HTML = """
@@ -1048,6 +1052,24 @@ _ARCH_HTML = """
   <div class="tags"><span class="tag">≈ 12 GB VRAM</span><span class="tag">Tool use · Web search · Code exec</span><span class="tag">~8B total params</span></div>
 </div>
 
+<!-- Sequential Text -->
+<div class="ab">
+  <h3>💬 Sequential Text</h3>
+  <p class="ad">Same Planner → Critic → Solver pipeline but agents communicate through text tokens instead of latent tensors. No RecursiveLinks required — any instruction-tuned model can be used.</p>
+  <div class="pl">
+    <div class="ag"><div class="m">Qwen3-1.7B</div><div class="r">Planner</div></div>
+    <span class="rl">→ text →</span>
+    <div class="ag"><div class="m">Llama3.2-1B</div><div class="r">Critic</div></div>
+    <span class="rl">→ text →</span>
+    <div class="ag"><div class="m">Qwen2.5-Math-1.5B</div><div class="r">Solver</div></div>
+    <span class="ar">→</span>
+    <div class="ag out"><div class="m">&nbsp;</div><div class="r">Answer</div></div>
+  </div>
+  <div class="fb">↺ multi-round: Solver text output → Planner prompt (next round)</div>
+  <div class="tags"><span class="tag">≈ 9 GB VRAM</span><span class="tag">Any instruction model</span><span class="tag">~4B total params</span></div>
+</div>
+<hr class="s">
+
 <div class="legend">
   <b>RL</b> = RecursiveLink — a small trained adapter (MLP) that transforms hidden-state tensors between
   different model architectures. All inter-agent communication within a round happens entirely in latent
@@ -1065,6 +1087,7 @@ _STYLE_AGENT_ROLES: Dict[str, List[Tuple[str, str]]] = {
     "mixture":           [("math", "Math"), ("code", "Code"), ("science", "Science"), ("summarizer", "Summarizer")],
     "distillation":      [("expert", "Expert"), ("learner", "Learner")],
     "deliberation":      [("reflector", "Reflector"), ("toolcaller", "Toolcaller")],
+    "sequential_text":   [("planner", "Planner"), ("critic", "Critic"), ("solver", "Solver")],
 }
 
 def _agent_vram_gb() -> Dict[str, Dict[str, float]]:

@@ -1688,6 +1688,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--agent2_model_name_or_path", type=str, default=None)
     parser.add_argument("--agent3_model_name_or_path", type=str, default=None)
 
+    parser.add_argument(
+        "--method",
+        type=str,
+        default="ours_recursive",
+        choices=["ours_recursive", "text_recursive"],
+    )
     parser.add_argument("--latent_steps", type=int, default=10)
     parser.add_argument("--agent1_inner_aligner_path", type=str, default=None)
     parser.add_argument("--agent2_inner_aligner_path", type=str, default=None)
@@ -1834,7 +1840,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     _tc.reset()
     args = parse_args()
-    args.method = "ours_recursive"
+    # args.method is set by the --method CLI flag (default: "ours_recursive")
     global _GEN_TOP_K, _GEN_MIN_P, _GEN_REPETITION_PENALTY
 
     if args.mas_shape != "chain":
@@ -1869,9 +1875,14 @@ def main() -> None:
             "--agent1_model_name_or_path/--agent2_model_name_or_path/--agent3_model_name_or_path."
         )
 
-    if args.latent_steps < 0:
+    _is_latent_method = args.method == "ours_recursive"
+    if _is_latent_method and args.latent_steps < 0:
         raise ValueError("--latent_steps must be non-negative.")
-    if not args.agent1_inner_aligner_path or not args.agent2_inner_aligner_path or not args.agent3_inner_aligner_path:
+    if _is_latent_method and (
+        not args.agent1_inner_aligner_path
+        or not args.agent2_inner_aligner_path
+        or not args.agent3_inner_aligner_path
+    ):
         raise ValueError(
             "Please provide --agent1_inner_aligner_path, --agent2_inner_aligner_path, "
             "and --agent3_inner_aligner_path."
@@ -1899,14 +1910,18 @@ def main() -> None:
     trust_remote_code = bool(args.trust_remote_code)
     enable_thinking = bool(args.enable_thinking)
 
-    outer_12_type = args.outer_adapter_type_fallback
-    outer_23_type = args.outer_adapter_type_fallback
-    outer_31_type = args.outer_adapter_type_fallback
-    outer_12_path, outer_23_path, outer_31_path = resolve_recursive_outer_paths(
-        outer_12_path=args.outer_12_path,
-        outer_23_path=args.outer_23_path,
-        outer_31_path=args.outer_31_path,
-    )
+    if _is_latent_method:
+        outer_12_type = args.outer_adapter_type_fallback
+        outer_23_type = args.outer_adapter_type_fallback
+        outer_31_type = args.outer_adapter_type_fallback
+        outer_12_path, outer_23_path, outer_31_path = resolve_recursive_outer_paths(
+            outer_12_path=args.outer_12_path,
+            outer_23_path=args.outer_23_path,
+            outer_31_path=args.outer_31_path,
+        )
+    else:
+        outer_12_type = outer_23_type = outer_31_type = ""
+        outer_12_path = outer_23_path = outer_31_path = ""
 
     dataset_name, questions, gold_answers, sample_metadata = load_eval_questions_and_answers(
         dataset=args.dataset,

@@ -47,6 +47,14 @@ STYLE_SPECS: Dict[str, Dict[str, object]] = {
             "outer": "RecursiveMAS/Deliberation-Outerlinks",
         },
     },
+    "sequential_text": {
+        "family": "text_sequential",
+        "repos": {
+            "planner": "RecursiveMAS/Sequential-Light-Planner-Qwen3-1.7B",
+            "critic": "RecursiveMAS/Sequential-Light-Critic-Llama3.2-1B",
+            "solver": "RecursiveMAS/Sequential-Light-Solver-Qwen2.5-Math-1.5B",
+        },
+    },
 }
 
 DATASET_DEFAULT_SPLIT = {
