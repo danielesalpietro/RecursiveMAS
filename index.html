@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HOUSE — RecursiveMAS Extensions</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.9.4/css/bulma.min.css" />
+  <style>
+    :root {
+      --rm-primary: #4338ca;
+      --rm-accent:  #0ea5e9;
+      --rm-violet:  #7c3aed;
+      --rm-ink:     #0f172a;
+      --rm-sub:     #475569;
+      --rm-line:    #e2e8f0;
+      --rm-bg:      #f8fafc;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      color: var(--rm-ink);
+      background: var(--rm-bg);
+      margin: 0;
+    }
+
+    /* ── HERO ── */
+    .hero-banner {
+      position: relative;
+      padding: 80px 20px 72px;
+      background: #0f172a;
+      overflow: hidden;
+      text-align: center;
+    }
+    .hero-banner::before {
+      content: '';
+      position: absolute; inset: 0;
+      background:
+        radial-gradient(ellipse 70% 60% at 20% 40%, rgba(67,56,202,.55) 0%, transparent 65%),
+        radial-gradient(ellipse 60% 50% at 80% 60%, rgba(14,165,233,.45) 0%, transparent 65%);
+      pointer-events: none;
+    }
+    .hero-banner::after {
+      content: '';
+      position: absolute; inset: 0;
+      background-image:
+        linear-gradient(rgba(255,255,255,.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.04) 1px, transparent 1px);
+      background-size: 36px 36px;
+      mask-image: linear-gradient(to bottom, transparent, black 20%, black 80%, transparent);
+      pointer-events: none;
+    }
+
+    .hero-inner { position: relative; z-index: 1; }
+
+    .eyebrow {
+      display: inline-block;
+      font-size: .72rem;
+      font-weight: 700;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+      color: #93c5fd;
+      margin-bottom: 14px;
+    }
+
+    .pub-title {
+      font-size: clamp(2rem, 5vw, 3.4rem);
+      font-weight: 800;
+      line-height: 1.12;
+      background: linear-gradient(120deg, #a5b4fc 0%, #38bdf8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 10px;
+    }
+
+    .pub-subtitle {
+      font-size: 1.05rem;
+      color: #94a3b8;
+      max-width: 640px;
+      margin: 0 auto 24px;
+      line-height: 1.65;
+    }
+
+    .author-block {
+      color: #cbd5e1;
+      font-size: .95rem;
+      margin-bottom: 28px;
+    }
+    .author-block a { color: #7dd3fc; text-decoration: none; border-bottom: 1px dashed rgba(125,211,252,.4); }
+    .author-block a:hover { color: #fff; border-color: #fff; }
+
+    .action-buttons { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 9px 20px;
+      border-radius: 8px;
+      font-size: .88rem; font-weight: 600;
+      text-decoration: none;
+      transition: transform .15s, box-shadow .15s;
+    }
+    .btn:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,.25); }
+    .btn-primary { background: var(--rm-primary); color: #fff; }
+    .btn-outline { background: transparent; color: #e2e8f0; border: 1.5px solid rgba(226,232,240,.3); }
+    .btn-outline:hover { border-color: rgba(226,232,240,.7); color: #fff; }
+    .btn-accent  { background: rgba(14,165,233,.15); color: #38bdf8; border: 1.5px solid rgba(14,165,233,.3); }
+
+    /* ── METRIC CARDS ── */
+    .metrics-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+      max-width: 860px;
+      margin: 44px auto 0;
+    }
+    @media (max-width: 768px) { .metrics-row { grid-template-columns: repeat(2, 1fr); } }
+
+    .metric-card {
+      background: rgba(255,255,255,.06);
+      border: 1px solid rgba(255,255,255,.1);
+      border-radius: 14px;
+      padding: 18px 14px;
+      text-align: center;
+      transition: transform .2s, box-shadow .2s;
+      cursor: default;
+    }
+    .metric-card:hover { transform: translateY(-4px); box-shadow: 0 12px 36px rgba(0,0,0,.3); }
+    .metric-val {
+      font-size: 2rem; font-weight: 800;
+      background: linear-gradient(120deg, #a5b4fc, #38bdf8);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .metric-label { font-size: .75rem; color: #94a3b8; margin-top: 4px; }
+
+    /* ── SECTIONS ── */
+    .rm-section { padding: 72px 20px; }
+    .rm-section:nth-child(even) { background: #fff; }
+
+    .section-inner { max-width: 960px; margin: 0 auto; }
+
+    .rm-eyebrow {
+      display: block;
+      font-size: .72rem; font-weight: 700; letter-spacing: .18em; text-transform: uppercase;
+      color: var(--rm-primary); margin-bottom: 6px;
+    }
+
+    .rm-section-title {
+      font-size: clamp(1.6rem, 3vw, 2.2rem);
+      font-weight: 800; line-height: 1.2;
+      margin-bottom: 10px;
+      position: relative; display: inline-block;
+    }
+    .rm-section-title::after {
+      content: '';
+      position: absolute; bottom: -6px; left: 0;
+      width: 48px; height: 4px; border-radius: 2px;
+      background: linear-gradient(90deg, var(--rm-primary), var(--rm-accent));
+    }
+
+    .rm-lead { color: var(--rm-sub); font-size: 1.02rem; line-height: 1.7; margin: 18px 0 32px; max-width: 720px; }
+
+    /* ── FEATURE CARDS ── */
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 20px;
+    }
+
+    .feature-card {
+      background: var(--rm-bg);
+      border: 1px solid var(--rm-line);
+      border-radius: 16px;
+      padding: 24px 22px;
+      transition: transform .2s, box-shadow .2s, border-color .2s;
+    }
+    .feature-card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 10px 32px rgba(67,56,202,.1);
+      border-color: #c7d2fe;
+    }
+
+    .fc-icon {
+      width: 44px; height: 44px; border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.5rem; margin-bottom: 14px;
+    }
+    .fc-icon.indigo { background: #eef2ff; }
+    .fc-icon.sky    { background: #f0f9ff; }
+    .fc-icon.violet { background: #f5f3ff; }
+    .fc-icon.green  { background: #f0fdf4; }
+    .fc-icon.amber  { background: #fffbeb; }
+
+    .fc-title { font-weight: 700; font-size: 1rem; margin-bottom: 7px; }
+    .fc-branch {
+      display: inline-block; font-family: 'JetBrains Mono', monospace;
+      font-size: .72rem; background: #eef2ff; color: var(--rm-primary);
+      border-radius: 5px; padding: 2px 7px; margin-bottom: 10px;
+    }
+    .fc-desc { color: var(--rm-sub); font-size: .88rem; line-height: 1.6; }
+
+    /* ── BRANCH TABLE ── */
+    .rm-table {
+      width: 100%; border-collapse: collapse;
+      font-size: .9rem; border-radius: 12px; overflow: hidden;
+      box-shadow: 0 1px 3px rgba(0,0,0,.08);
+    }
+    .rm-table thead tr { background: linear-gradient(135deg, #eef2ff, #ede9fe); }
+    .rm-table th {
+      padding: 12px 16px; text-align: left;
+      font-weight: 700; font-size: .8rem; text-transform: uppercase; letter-spacing: .06em;
+      color: var(--rm-primary);
+    }
+    .rm-table td { padding: 11px 16px; border-bottom: 1px solid var(--rm-line); }
+    .rm-table tbody tr:last-child td { border-bottom: none; }
+    .rm-table tbody tr:hover { background: #f8faff; }
+    .rm-table code {
+      font-family: 'JetBrains Mono', monospace; font-size: .8rem;
+      background: #eef2ff; color: var(--rm-primary); border-radius: 4px; padding: 1px 6px;
+    }
+
+    /* ── HIGHLIGHT PILLS ── */
+    .pill {
+      display: inline-block; padding: 3px 10px; border-radius: 6px;
+      font-size: .78rem; font-weight: 600;
+    }
+    .pill-emerald { background: #dcfce7; color: #166534; }
+    .pill-sky     { background: #e0f2fe; color: #075985; }
+    .pill-amber   { background: #fef3c7; color: #92400e; }
+    .pill-violet  { background: #ede9fe; color: #5b21b6; }
+
+    /* ── ARCHITECTURE DIAGRAM ── */
+    .arch-block {
+      background: linear-gradient(135deg, #f8f9ff 0%, #f0f4ff 100%);
+      border: 1px solid #c7d2fe;
+      border-radius: 16px; padding: 28px 24px;
+      margin-bottom: 20px;
+    }
+    .arch-title { font-weight: 700; color: var(--rm-primary); margin-bottom: 12px; font-size: 1rem; }
+    .arch-flow {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    }
+    .agent-box {
+      background: #fff; border: 2px solid #818cf8;
+      border-radius: 10px; padding: 8px 14px; text-align: center; min-width: 90px;
+    }
+    .agent-box .model { font-size: .68rem; color: #6b7280; }
+    .agent-box .role  { font-weight: 700; font-size: .88rem; color: var(--rm-primary); }
+    .agent-box.special { border-color: #7c3aed; }
+    .agent-box.special .role { color: var(--rm-violet); }
+    .agent-box.output { background: #fffbeb; border-color: #fbbf24; }
+    .agent-box.output .role { color: #92400e; }
+    .rl-arrow {
+      background: #fff7ed; border: 1.5px dashed #f97316;
+      border-radius: 6px; padding: 3px 8px;
+      font-size: .7rem; color: #c2410c; font-weight: 700;
+      white-space: nowrap;
+    }
+    .plain-arrow { font-size: 1.2rem; color: #94a3b8; }
+    .arch-note { font-size: .8rem; color: #64748b; margin-top: 10px; font-style: italic; }
+
+    /* ── ABSTRACT BOX ── */
+    .abstract-box {
+      background: #fff;
+      border-left: 4px solid var(--rm-primary);
+      border-radius: 0 12px 12px 0;
+      padding: 24px 28px;
+      box-shadow: 0 2px 12px rgba(67,56,202,.08);
+    }
+    .abstract-box p { color: var(--rm-sub); line-height: 1.75; font-size: .97rem; }
+
+    /* ── BIBTEX ── */
+    .bibtex-block {
+      background: #0f172a; color: #e2e8f0;
+      border-radius: 12px; padding: 24px;
+      font-family: 'JetBrains Mono', monospace; font-size: .82rem; line-height: 1.7;
+      position: relative; overflow: auto;
+    }
+    .copy-btn {
+      position: absolute; top: 12px; right: 14px;
+      background: rgba(255,255,255,.1); color: #94a3b8;
+      border: 1px solid rgba(255,255,255,.15); border-radius: 6px;
+      padding: 4px 10px; font-size: .75rem; cursor: pointer;
+      transition: background .2s;
+    }
+    .copy-btn:hover { background: rgba(255,255,255,.18); color: #e2e8f0; }
+
+    /* ── FOOTER ── */
+    footer {
+      background: #0f172a; color: #64748b;
+      padding: 40px 20px; text-align: center; font-size: .85rem; line-height: 1.8;
+    }
+    footer a { color: #7dd3fc; text-decoration: none; }
+    footer a:hover { color: #fff; }
+
+    /* ── SCROLL-TO-TOP ── */
+    #totop {
+      position: fixed; bottom: 24px; right: 24px;
+      background: var(--rm-primary); color: #fff;
+      width: 40px; height: 40px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.1rem; cursor: pointer;
+      box-shadow: 0 4px 14px rgba(67,56,202,.4);
+      opacity: 0; transition: opacity .2s;
+      text-decoration: none;
+    }
+    #totop.visible { opacity: 1; }
+
+    /* ── DIVIDER ── */
+    hr.rm-div { border: none; border-top: 1px solid var(--rm-line); margin: 40px 0; }
+
+    /* ── RESPONSIVE ── */
+    @media (max-width: 640px) {
+      .arch-flow { gap: 6px; }
+      .agent-box { min-width: 70px; padding: 6px 10px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     HERO
+═══════════════════════════════════════════════════════════════════════ -->
+<section class="hero-banner">
+  <div class="hero-inner">
+    <span class="eyebrow">Built on RecursiveMAS · arXiv:2604.25917</span>
+
+    <h1 class="pub-title">
+      HOUSE<br>
+      <span style="font-size:.6em;font-weight:700;opacity:.85">RecursiveMAS Engineering Extensions</span>
+    </h1>
+
+    <p class="pub-subtitle">
+      A production-grade interactive front-end, LLM enhancement layer,
+      token-based collaboration mode, and multi-GPU support —
+      extending the RecursiveMAS latent-space framework for real-world use.
+    </p>
+
+    <div class="author-block">
+      <a href="https://www.salpietro.it" target="_blank">Daniele Carmelo Salpietro</a>
+      &nbsp;·&nbsp;
+      <a href="mailto:daniele@salpietro.it">daniele@salpietro.it</a>
+      &nbsp;·&nbsp; 2026
+    </div>
+
+    <div class="action-buttons">
+      <a class="btn btn-primary" href="https://github.com/danielesalpietro/RecursiveMAS" target="_blank">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.477 2 12c0 4.418 2.865 8.167 6.839 9.49.5.092.682-.217.682-.483 0-.237-.009-.868-.013-1.703-2.782.604-3.369-1.34-3.369-1.34-.454-1.154-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0 1 12 6.836a9.59 9.59 0 0 1 2.504.337c1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.202 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .268.18.58.688.482A10.02 10.02 0 0 0 22 12c0-5.523-4.477-10-10-10z"/></svg>
+        GitHub Repository
+      </a>
+      <a class="btn btn-outline" href="https://arxiv.org/abs/2604.25917" target="_blank">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2zm1 14.93V17a1 1 0 0 1-2 0v-.07A8.001 8.001 0 0 1 4.07 11H4a1 1 0 0 1 0-2h.07A8.001 8.001 0 0 1 11 3.07V3a1 1 0 0 1 2 0v.07A8.001 8.001 0 0 1 19.93 11H20a1 1 0 0 1 0 2h-.07A8.001 8.001 0 0 1 13 16.93z"/></svg>
+        Base Paper
+      </a>
+      <a class="btn btn-accent" href="https://github.com/danielesalpietro/RecursiveMAS/blob/claude/sharp-carson-nBKHX/EXTENSIONS.md" target="_blank">
+        📄 Technical Paper
+      </a>
+      <a class="btn btn-outline" href="https://huggingface.co/RecursiveMAS/collections" target="_blank">
+        🤗 Models
+      </a>
+    </div>
+
+    <div class="metrics-row">
+      <div class="metric-card">
+        <div class="metric-val">6</div>
+        <div class="metric-label">Collaboration Styles</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-val">4</div>
+        <div class="metric-label">Feature Branches</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-val">3</div>
+        <div class="metric-label">LLM Backends</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-val">∞</div>
+        <div class="metric-label">Models (text mode)</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     ABSTRACT
+═══════════════════════════════════════════════════════════════════════ -->
+<section class="rm-section">
+  <div class="section-inner">
+    <span class="rm-eyebrow">Overview</span>
+    <h2 class="rm-section-title">What This Work Adds</h2>
+
+    <div class="abstract-box" style="margin-top:28px">
+      <p>
+        <strong>RecursiveMAS</strong> (Yang et al., 2026) introduced a multi-agent framework where
+        heterogeneous LLMs collaborate through <em>latent-space recursion</em> — passing hidden-state
+        tensors instead of text, reducing token usage by
+        <span class="pill pill-emerald">−75%</span> and achieving a
+        <span class="pill pill-sky">2.4× speedup</span> over text-based alternatives.
+      </p>
+      <p style="margin-top:14px">
+        This project extends the official release with four engineering contributions:
+        a production-grade web front-end (<strong>HOUSE</strong>) with Chat and Batch Evaluation modes;
+        an optional <strong>LLM enhancement layer</strong> that normalises inputs and synthesises
+        outputs using Claude, Gemini, or any OpenAI-compatible endpoint;
+        a <strong>sequential-text</strong> collaboration mode that removes the RecursiveLink
+        requirement so any instruction-tuned model pair can be used; and
+        a <strong>multi-GPU device mapper</strong> for distributing agents across GPUs.
+        Three systematic evaluation bugs are also documented and fixed.
+      </p>
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     HOUSE WEB UI
+═══════════════════════════════════════════════════════════════════════ -->
+<section class="rm-section">
+  <div class="section-inner">
+    <span class="rm-eyebrow">Branch: feature/domain-system-prompts</span>
+    <h2 class="rm-section-title">🏥 HOUSE Web UI</h2>
+    <p class="rm-lead">
+      <em>Heuristic Orchestration Using Specialist Ensembles</em> — a Gradio
+      <code>Blocks</code> application that wraps the entire inference pipeline with a warm
+      model cache, streaming logs, and full parameter control.
+    </p>
+
+    <div class="feature-grid">
+      <div class="feature-card">
+        <div class="fc-icon indigo">💬</div>
+        <div class="fc-title">Chat Mode</div>
+        <p class="fc-desc">Ask any question and receive the parsed answer, solver reasoning chain, and collapsible Planner / Critic outputs — with a full run metadata table on every reply.</p>
+      </div>
+      <div class="feature-card">
+        <div class="fc-icon sky">📊</div>
+        <div class="fc-title">Batch Evaluation</div>
+        <p class="fc-desc">Run full benchmark datasets (<code>math500</code>, <code>medqa</code>, <code>gpqa</code>, <code>mbppplus</code>) with live log streaming, cooperative stop, and JSONL download.</p>
+      </div>
+      <div class="feature-card">
+        <div class="fc-icon violet">🌐</div>
+        <div class="fc-title">Domain Prompts</div>
+        <p class="fc-desc">Four reasoning domains: <strong>general</strong>, <strong>medical emergency</strong>, <strong>software engineering</strong>, <strong>scientific research</strong>. Propagated via thread-local storage — zero API changes.</p>
+      </div>
+      <div class="feature-card">
+        <div class="fc-icon green">🔥</div>
+        <div class="fc-title">Warm Model Cache</div>
+        <p class="fc-desc">Models load once on first request and stay in VRAM. Style switches evict and reload. No cold-start penalty between questions.</p>
+      </div>
+      <div class="feature-card">
+        <div class="fc-icon amber">📋</div>
+        <div class="fc-title">Run Metadata</div>
+        <p class="fc-desc">Every reply includes a collapsible table: style, domain, rounds, latent steps, temperature, top-p, seed, device, start/end time, elapsed, token counts.</p>
+      </div>
+      <div class="feature-card">
+        <div class="fc-icon indigo">🐳</div>
+        <div class="fc-title">Docker Ready</div>
+        <p class="fc-desc">Two-service Compose setup (<code>recursivemas</code> + <code>serve</code>) sharing a named <code>hf_cache</code> volume. CPU fallback documented for Windows/WSL2 users.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     LLM ENHANCEMENT LAYER
+═══════════════════════════════════════════════════════════════════════ -->
+<section class="rm-section" style="background:#fff">
+  <div class="section-inner">
+    <span class="rm-eyebrow">Branch: feature/llm-postprocessing</span>
+    <h2 class="rm-section-title">✨ LLM Enhancement Layer</h2>
+    <p class="rm-lead">
+      An optional wrapper that applies a frontier LLM before and after the MAS pipeline —
+      translating, normalising, and synthesising without ever touching the core inference code.
+    </p>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:32px">
+      <div class="arch-block">
+        <div class="arch-title">Pre-processing pipeline</div>
+        <div class="arch-flow" style="flex-direction:column;align-items:flex-start;gap:10px">
+          <div style="background:#fff;border:1px solid #c7d2fe;border-radius:8px;padding:8px 14px;font-size:.85rem;width:100%">
+            👤 User question (any language / notation)
+          </div>
+          <div style="color:#94a3b8;font-size:.8rem;padding-left:8px">↓ translate · disambiguate · structure</div>
+          <div style="background:#eef2ff;border:1px solid #818cf8;border-radius:8px;padding:8px 14px;font-size:.85rem;width:100%;color:var(--rm-primary);font-weight:600">
+            Frontier LLM (Claude / Gemini / OpenAI-compat)
+          </div>
+          <div style="color:#94a3b8;font-size:.8rem;padding-left:8px">↓ English · LaTeX · explicit constraints</div>
+          <div style="background:#f0fdf4;border:1px solid #4ade80;border-radius:8px;padding:8px 14px;font-size:.85rem;width:100%">
+            🤖 MAS pipeline input
+          </div>
+        </div>
+        <div class="arch-note">MCQ detection adds a suffix that prevents option injection or answer leakage.</div>
+      </div>
+
+      <div class="arch-block">
+        <div class="arch-title">Post-processing pipeline</div>
+        <div class="arch-flow" style="flex-direction:column;align-items:flex-start;gap:10px">
+          <div style="background:#fff;border:1px solid #c7d2fe;border-radius:8px;padding:8px 14px;font-size:.85rem;width:100%">
+            🤖 MAS output (planner · critic · solver · parsed answer)
+          </div>
+          <div style="color:#94a3b8;font-size:.8rem;padding-left:8px">↓ synthesise · format · language-match</div>
+          <div style="background:#eef2ff;border:1px solid #818cf8;border-radius:8px;padding:8px 14px;font-size:.85rem;width:100%;color:var(--rm-primary);font-weight:600">
+            Frontier LLM (same backend)
+          </div>
+          <div style="color:#94a3b8;font-size:.8rem;padding-left:8px">↓ coherent · fluent · user's language</div>
+          <div style="background:#f0fdf4;border:1px solid #4ade80;border-radius:8px;padding:8px 14px;font-size:.85rem;width:100%">
+            👤 Final response to user
+          </div>
+        </div>
+        <div class="arch-note">Falls back gracefully — never blocks the pipeline on any error.</div>
+      </div>
+    </div>
+
+    <table class="rm-table">
+      <thead><tr><th>Backend</th><th>SDK</th><th>Key source</th><th>Model discovery</th></tr></thead>
+      <tbody>
+        <tr><td>Claude (Anthropic API)</td><td><code>anthropic</code></td><td><code>ANTHROPIC_API_KEY</code> env / UI</td><td>Live API query</td></tr>
+        <tr><td>Gemini (Google AI)</td><td><code>google.generativeai</code></td><td><code>GEMINI_API_KEY</code> env / UI</td><td>Live API query</td></tr>
+        <tr><td>OpenAI-compatible</td><td><code>openai</code></td><td>Endpoint URL + optional key</td><td>Live <code>/models</code> query</td></tr>
+      </tbody>
+    </table>
+    <p style="font-size:.82rem;color:#94a3b8;margin-top:10px">API keys are never hardcoded. <code>.env</code> is in <code>.gitignore</code>.</p>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     SEQUENTIAL-TEXT
+═══════════════════════════════════════════════════════════════════════ -->
+<section class="rm-section">
+  <div class="section-inner">
+    <span class="rm-eyebrow">Branch: feature/sequential-text</span>
+    <h2 class="rm-section-title">💬 Sequential-Text Mode</h2>
+    <p class="rm-lead">
+      The same Planner → Critic → Solver topology, but agents communicate via natural-language
+      tokens instead of latent tensors. No RecursiveLinks required — any instruction-tuned model
+      can be plugged in from the local HF cache or any HuggingFace ID.
+    </p>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:32px">
+      <div>
+        <h4 style="font-weight:700;margin-bottom:14px">Latent mode (paper baseline)</h4>
+        <div class="arch-block">
+          <div class="arch-flow">
+            <div class="agent-box"><div class="model">Qwen3-1.7B</div><div class="role">Planner</div></div>
+            <span class="rl-arrow">RL →</span>
+            <div class="agent-box"><div class="model">Llama3.2-1B</div><div class="role">Critic</div></div>
+            <span class="rl-arrow">RL →</span>
+            <div class="agent-box"><div class="model">Qwen2.5-Math</div><div class="role">Solver</div></div>
+          </div>
+          <div class="arch-note">Inter-agent: hidden-state tensors via RecursiveLink adapters. Fast · opaque.</div>
+        </div>
+      </div>
+      <div>
+        <h4 style="font-weight:700;margin-bottom:14px">Text mode <span class="pill pill-sky">new</span></h4>
+        <div class="arch-block" style="background:linear-gradient(135deg,#f0fdf4,#ecfdf5);border-color:#86efac">
+          <div class="arch-flow">
+            <div class="agent-box" style="border-color:#4ade80"><div class="model">any model</div><div class="role">Planner</div></div>
+            <span style="color:#16a34a;font-weight:700;font-size:.8rem">→ text →</span>
+            <div class="agent-box" style="border-color:#4ade80"><div class="model">any model</div><div class="role">Critic</div></div>
+            <span style="color:#16a34a;font-weight:700;font-size:.8rem">→ text →</span>
+            <div class="agent-box" style="border-color:#4ade80"><div class="model">any model</div><div class="role">Solver</div></div>
+          </div>
+          <div class="arch-note" style="color:#166534">Inter-agent: natural-language tokens. Human-readable · auditable.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="feature-grid" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr))">
+      <div class="feature-card">
+        <div class="fc-title">CLI flag</div>
+        <p class="fc-desc"><code>--method text_recursive</code> — exposed from the previously hardcoded internal code path. All adapter validation is bypassed.</p>
+      </div>
+      <div class="feature-card">
+        <div class="fc-title">Model selection UI</div>
+        <p class="fc-desc">Per-agent dropdown listing cached models by size. "Custom model…" sentinel reveals a free-text field for any HF ID.</p>
+      </div>
+      <div class="feature-card">
+        <div class="fc-title">Interpretability use</div>
+        <p class="fc-desc">Read intermediate agent reasoning. Compare with latent mode to understand what the latent channel compresses vs. expresses explicitly.</p>
+      </div>
+      <div class="feature-card">
+        <div class="fc-title">Self-improvement</div>
+        <p class="fc-desc">Filter <code>correct=True</code> trajectories → fine-tune new specialist models. A natural data flywheel for iterative improvement.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     TOKEN & VRAM
+═══════════════════════════════════════════════════════════════════════ -->
+<section class="rm-section" style="background:#fff">
+  <div class="section-inner">
+    <span class="rm-eyebrow">Branch: feature/llm-postprocessing</span>
+    <h2 class="rm-section-title">📊 Token Accounting &amp; VRAM Introspection</h2>
+    <p class="rm-lead">
+      Every response is self-documenting: token counts and live VRAM measurements are surfaced
+      in the UI, enabling cost estimation and OOM prevention.
+    </p>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px">
+      <div class="arch-block">
+        <div class="arch-title">Token counter</div>
+        <p style="font-size:.88rem;color:var(--rm-sub);line-height:1.65">
+          Thread-local accumulator in <code>_token_counter.py</code> intercepts every
+          <code>model.generate()</code> call across all inference modules.
+          Emits a single line at pipeline completion:
+        </p>
+        <pre style="background:#0f172a;color:#a5b4fc;border-radius:8px;padding:12px;font-size:.78rem;margin-top:12px;overflow:auto">[tokens] prompt=4821 generated=612 total=5433</pre>
+        <p style="font-size:.82rem;color:var(--rm-sub);margin-top:10px">
+          Shown in the Run Info table on every chat reply.
+        </p>
+      </div>
+      <div class="arch-block">
+        <div class="arch-title">Dynamic VRAM estimates</div>
+        <p style="font-size:.88rem;color:var(--rm-sub);line-height:1.65">
+          Hardcoded estimates were replaced with live measurements from <code>scan_cache_dir()</code>
+          — the same source as the Model Manager tab.
+          <br><br>
+          Example correction: <code>sequential_scaled</code> was documented as ~12 GB;
+          actual measured size from HF cache: <strong>~23 GB</strong>.
+        </p>
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+          <span class="pill pill-emerald">sequential_light ≈ 5 GB</span>
+          <span class="pill pill-sky">sequential_scaled ≈ 23 GB</span>
+          <span class="pill pill-violet">mixture ≈ 15 GB</span>
+          <span class="pill pill-amber">distillation ≈ 18 GB</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     MULTI-GPU
+═══════════════════════════════════════════════════════════════════════ -->
+<section class="rm-section">
+  <div class="section-inner">
+    <span class="rm-eyebrow">Branch: feature/multi-gpu</span>
+    <h2 class="rm-section-title">⚡ Multi-GPU Device Mapping</h2>
+    <p class="rm-lead">
+      Distribute individual agents across different GPUs from the UI — no code changes required.
+      Live VRAM fitness checks warn before you hit OOM.
+    </p>
+
+    <div class="arch-block" style="max-width:620px">
+      <div class="arch-title">Example assignment — Sequential Scaled (23 GB) across two 16 GB GPUs</div>
+      <table class="rm-table" style="margin-top:8px">
+        <thead><tr><th>Agent</th><th>Model</th><th>Size</th><th>Device</th></tr></thead>
+        <tbody>
+          <tr><td>Planner</td><td>Gemma3-4B</td><td>~8.2 GB</td><td><code>cuda:0</code> 🟢</td></tr>
+          <tr><td>Critic</td><td>Llama3.2-3B</td><td>~6.1 GB</td><td><code>cuda:0</code> 🟢</td></tr>
+          <tr><td>Solver</td><td>Qwen3.5-4B</td><td>~8.6 GB</td><td><code>cuda:1</code> 🟢</td></tr>
+        </tbody>
+      </table>
+      <div class="arch-note">State persisted in <code>gr.State</code> and forwarded through the entire call chain.</div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     EVAL FIXES
+═══════════════════════════════════════════════════════════════════════ -->
+<section class="rm-section" style="background:#fff">
+  <div class="section-inner">
+    <span class="rm-eyebrow">Branch: feature/llm-postprocessing</span>
+    <h2 class="rm-section-title">🐛 Evaluation Infrastructure Fixes</h2>
+    <p class="rm-lead">
+      Three systematic bugs in the answer parser were identified during Math500 benchmarking and corrected.
+    </p>
+
+    <table class="rm-table">
+      <thead><tr><th>#</th><th>Bug</th><th>Effect</th><th>Fix</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>1</td>
+          <td><code>compare_answers()</code> cascading A-default</td>
+          <td>Parse failure on either side scored as <em>correct</em> when gold = A, inflating accuracy</td>
+          <td><code>default=None</code> on both sides; <code>correct=False</code> on any parse failure</td>
+        </tr>
+        <tr>
+          <td>2</td>
+          <td><code>extract_gold_answer()</code> silent A-default</td>
+          <td>Unparseable gold answers became <code>"A"</code>, skewing gold distribution</td>
+          <td>Return <code>None</code> on failure; propagated to fix #1</td>
+        </tr>
+        <tr>
+          <td>3</td>
+          <td>Latent solver output discriminator</td>
+          <td><code>max_new_tokens</code> heuristic failed for short answers (e.g. <code>\boxed{B}</code>)</td>
+          <td>Switch to <code>prompt_len</code> as discriminator</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     BRANCH SUMMARY
+═══════════════════════════════════════════════════════════════════════ -->
+<section class="rm-section">
+  <div class="section-inner">
+    <span class="rm-eyebrow">Development Branches</span>
+    <h2 class="rm-section-title">Branch Overview</h2>
+    <p class="rm-lead">All branches are live on the public repository.</p>
+
+    <table class="rm-table">
+      <thead><tr><th>Branch</th><th>Key files</th><th>Capability added</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><a href="https://github.com/danielesalpietro/RecursiveMAS/tree/feature/domain-system-prompts" target="_blank"><code>feature/domain-system-prompts</code></a></td>
+          <td><code>prompts.py</code>, <code>inference_mas.py</code>, <code>serve.py</code></td>
+          <td>Domain prompts · HOUSE two-tab layout · batch eval · run metadata · warm cache</td>
+        </tr>
+        <tr>
+          <td><a href="https://github.com/danielesalpietro/RecursiveMAS/tree/feature/llm-postprocessing" target="_blank"><code>feature/llm-postprocessing</code></a></td>
+          <td><code>serve.py</code>, <code>answer_utils.py</code></td>
+          <td>LLM pre/post-processing · MCQ detection · dynamic VRAM · token counting · 3 eval fixes</td>
+        </tr>
+        <tr>
+          <td><a href="https://github.com/danielesalpietro/RecursiveMAS/tree/feature/sequential-text" target="_blank"><code>feature/sequential-text</code></a></td>
+          <td><code>inference_mas.py</code>, <code>run.py</code>, <code>load_from_repo.py</code>, <code>serve.py</code></td>
+          <td><code>sequential_text</code> style · <code>--method text_recursive</code> CLI · model-selection UI</td>
+        </tr>
+        <tr>
+          <td><a href="https://github.com/danielesalpietro/RecursiveMAS/tree/feature/multi-gpu" target="_blank"><code>feature/multi-gpu</code></a></td>
+          <td><code>serve.py</code></td>
+          <td>Per-agent GPU assignment · live VRAM fitness check · layout fix</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     REFLECTIONS
+═══════════════════════════════════════════════════════════════════════ -->
+<section class="rm-section" style="background:#fff">
+  <div class="section-inner">
+    <span class="rm-eyebrow">Open Questions</span>
+    <h2 class="rm-section-title">Reflections &amp; Future Directions</h2>
+    <p class="rm-lead">
+      Engineering RecursiveMAS for production raises deeper questions about latent
+      communication, safety, and self-improvement that go beyond benchmark accuracy.
+    </p>
+
+    <div class="feature-grid">
+      <div class="feature-card">
+        <div class="fc-icon indigo">🔍</div>
+        <div class="fc-title">Latent interpretability</div>
+        <p class="fc-desc">The text mode is the natural observation window. Running both modes on the same question reveals what the latent channel encodes compactly vs. what requires explicit articulation.</p>
+      </div>
+      <div class="feature-card">
+        <div class="fc-icon violet">🏛️</div>
+        <div class="fc-title">Constitutional constraints</div>
+        <p class="fc-desc">Echo chambers, galaxy-brained reasoning, and oscillation are failure modes specific to iterative multi-agent loops. Diversity constraints on the Critic and uncertainty budgets can mitigate them.</p>
+      </div>
+      <div class="feature-card">
+        <div class="fc-icon sky">🔄</div>
+        <div class="fc-title">Self-improvement loop</div>
+        <p class="fc-desc">Text-mode trajectories labelled <code>correct=True</code> are natural fine-tuning data for new specialist models — a STaR-style flywheel adapted to the multi-agent setting.</p>
+      </div>
+      <div class="feature-card">
+        <div class="fc-icon green">🧩</div>
+        <div class="fc-title">Vertical specialisation</div>
+        <p class="fc-desc">Domain-specialist agents (medical, legal, formal verification) require new adapter pairs. Sparse topologies ($O(N)$ links rather than $O(N^2)$) keep the adapter matrix tractable.</p>
+      </div>
+    </div>
+
+    <p style="margin-top:28px;font-size:.9rem;color:var(--rm-sub)">
+      A full treatment of these topics is available in the companion document:
+      <a href="https://github.com/danielesalpietro/RecursiveMAS/blob/claude/sharp-carson-nBKHX/EXTENSIONS.md" target="_blank" style="color:var(--rm-primary);font-weight:600">EXTENSIONS.md</a>
+    </p>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     CITATION
+═══════════════════════════════════════════════════════════════════════ -->
+<section class="rm-section">
+  <div class="section-inner">
+    <span class="rm-eyebrow">Citation</span>
+    <h2 class="rm-section-title">How to Cite</h2>
+    <p class="rm-lead">If you build on this work, please also cite the original RecursiveMAS paper.</p>
+
+    <h4 style="font-weight:700;margin-bottom:12px">This work (HOUSE extensions)</h4>
+    <div class="bibtex-block" style="margin-bottom:28px">
+      <button class="copy-btn" onclick="copyBib('bib1',this)">Copy</button>
+      <span id="bib1">@misc{salpietro2026house,
+  title   = {HOUSE: Engineering Extensions for RecursiveMAS},
+  author  = {Daniele Carmelo Salpietro},
+  year    = {2026},
+  url     = {https://github.com/danielesalpietro/RecursiveMAS},
+  note    = {Extensions to arXiv:2604.25917}
+}</span>
+    </div>
+
+    <h4 style="font-weight:700;margin-bottom:12px">Base paper (RecursiveMAS)</h4>
+    <div class="bibtex-block">
+      <button class="copy-btn" onclick="copyBib('bib2',this)">Copy</button>
+      <span id="bib2">@misc{recursivemas,
+  title         = {Recursive Multi-Agent Systems},
+  author        = {Xiyuan Yang and Jiaru Zou and Rui Pan and Ruizhong Qiu and
+                   Pan Lu and Shizhe Diao and Jindong Jiang and Hanghang Tong and
+                   Tong Zhang and Markus J. Buehler and Jingrui He and James Zou},
+  year          = {2026},
+  eprint        = {2604.25917},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.AI},
+  url           = {https://arxiv.org/abs/2604.25917}
+}</span>
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     FOOTER
+═══════════════════════════════════════════════════════════════════════ -->
+<footer>
+  <p>
+    <strong style="color:#e2e8f0">HOUSE — RecursiveMAS Extensions</strong>
+    &nbsp;·&nbsp;
+    <a href="https://www.salpietro.it" target="_blank">Daniele Carmelo Salpietro</a>
+    &nbsp;·&nbsp;
+    <a href="mailto:daniele@salpietro.it">daniele@salpietro.it</a>
+  </p>
+  <p style="margin-top:6px">
+    Built on
+    <a href="https://arxiv.org/abs/2604.25917" target="_blank">RecursiveMAS (arXiv:2604.25917)</a>
+    by Yang et al., 2026.
+    &nbsp;·&nbsp;
+    <a href="https://github.com/danielesalpietro/RecursiveMAS" target="_blank">GitHub Repository</a>
+    &nbsp;·&nbsp;
+    <a href="https://github.com/danielesalpietro/RecursiveMAS/blob/claude/sharp-carson-nBKHX/EXTENSIONS.md" target="_blank">Technical Paper</a>
+  </p>
+  <p style="margin-top:6px;font-size:.8rem;color:#334155">
+    HOUSE v1.1.1 &nbsp;·&nbsp; 2026
+  </p>
+</footer>
+
+<!-- Scroll-to-top -->
+<a href="#" id="totop" aria-label="Back to top">↑</a>
+
+<script>
+  // Scroll-to-top visibility
+  window.addEventListener('scroll', () => {
+    document.getElementById('totop').classList.toggle('visible', window.scrollY > 400);
+  });
+
+  // Copy BibTeX
+  function copyBib(id, btn) {
+    const text = document.getElementById(id).textContent;
+    navigator.clipboard.writeText(text).then(() => {
+      const orig = btn.textContent;
+      btn.textContent = '✓ Copied';
+      btn.style.color = '#4ade80';
+      setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 2000);
+    });
+  }
+
+  // Metric card roll-up animation
+  document.querySelectorAll('.metric-val').forEach((el, i) => {
+    const target = el.textContent.trim();
+    if (isNaN(parseInt(target))) return;
+    const end = parseInt(target);
+    let start = 0;
+    const duration = 1200;
+    const delay = i * 120;
+    setTimeout(() => {
+      const step = (timestamp) => {
+        if (!step.startTime) step.startTime = timestamp;
+        const progress = Math.min((timestamp - step.startTime) / duration, 1);
+        el.textContent = Math.round(progress * end);
+        if (progress < 1) requestAnimationFrame(step);
+        else el.textContent = target;
+      };
+      requestAnimationFrame(step);
+    }, delay);
+  });
+</script>
+</body>
+</html>
