@@ -1697,6 +1697,43 @@ def build_ui() -> gr.Blocks:
                             "and cached locally. This may take several minutes. "
                             "Subsequent runs load from cache instantly."
                         )
+                        _cached_llms = _list_cached_llm_models()
+                        _txt_defaults = {
+                            "planner": "RecursiveMAS/Sequential-Light-Planner-Qwen3-1.7B",
+                            "critic":  "RecursiveMAS/Sequential-Light-Critic-Llama3.2-1B",
+                            "solver":  "RecursiveMAS/Sequential-Light-Solver-Qwen2.5-Math-1.5B",
+                        }
+                        def _dd_default(role: str) -> str:
+                            repo = _txt_defaults[role]
+                            return repo if any(v == repo for _, v in _cached_llms) else (
+                                _cached_llms[0][1] if len(_cached_llms) > 1 else _LLM_CUSTOM_SENTINEL
+                            )
+                        with gr.Accordion("🔧 Model Configuration", open=True, visible=False) as txt_model_acc:
+                            gr.Markdown("<small>Choose models for each agent in the Sequential Text pipeline. Only locally cached models are listed; enter a HuggingFace repo ID in the custom field to use any other model.</small>")
+                            txt_planner_dd = gr.Dropdown(
+                                choices=_cached_llms, value=_dd_default("planner"),
+                                label="🧠 Planner",
+                            )
+                            txt_planner_custom = gr.Textbox(
+                                placeholder="e.g. Qwen/Qwen3-4B-Instruct",
+                                label="Custom Planner model ID", visible=False,
+                            )
+                            txt_critic_dd = gr.Dropdown(
+                                choices=_cached_llms, value=_dd_default("critic"),
+                                label="🔍 Critic",
+                            )
+                            txt_critic_custom = gr.Textbox(
+                                placeholder="e.g. meta-llama/Llama-3.2-3B-Instruct",
+                                label="Custom Critic model ID", visible=False,
+                            )
+                            txt_solver_dd = gr.Dropdown(
+                                choices=_cached_llms, value=_dd_default("solver"),
+                                label="⚡ Solver",
+                            )
+                            txt_solver_custom = gr.Textbox(
+                                placeholder="e.g. Qwen/Qwen2.5-Math-7B-Instruct",
+                                label="Custom Solver model ID", visible=False,
+                            )
                         rounds_sl = gr.Slider(1, 5, value=3, step=1, label="Recursive rounds")
                         latent_sl = gr.Slider(8, 64, value=32, step=8, label="Latent steps")
                         device_dd = gr.Dropdown(choices=device_opts, value=device_opts[0], label="Device")
@@ -1843,6 +1880,9 @@ def build_ui() -> gr.Blocks:
                             llm_backend_dd, llm_endpoint_txt,
                             llm_model_dd, llm_model_custom_txt, llm_key_txt,
                             llm_pre_cb, llm_post_cb,
+                            txt_planner_dd, txt_planner_custom,
+                            txt_critic_dd, txt_critic_custom,
+                            txt_solver_dd, txt_solver_custom,
                         ],
                         outputs=[chatbot, state, msg],
                     )
@@ -1861,6 +1901,18 @@ def build_ui() -> gr.Blocks:
                     inputs=[device_dd, style_dd],
                     outputs=[vram_status_md],
                 )
+                # Show/hide model config accordion for sequential_text
+                style_dd.change(
+                    lambda s: gr.update(visible=(s == "sequential_text")),
+                    inputs=[style_dd],
+                    outputs=[txt_model_acc],
+                )
+                # Show/hide custom textboxes
+                def _toggle_custom(v):
+                    return gr.update(visible=(v == _LLM_CUSTOM_SENTINEL))
+                txt_planner_dd.change(_toggle_custom, inputs=[txt_planner_dd], outputs=[txt_planner_custom])
+                txt_critic_dd.change(_toggle_custom, inputs=[txt_critic_dd], outputs=[txt_critic_custom])
+                txt_solver_dd.change(_toggle_custom, inputs=[txt_solver_dd], outputs=[txt_solver_custom])
 
             # ── Tab 2: Batch Evaluation ───────────────────────────────────
             with gr.Tab("📊 Batch Evaluation"):
