@@ -1,6 +1,7 @@
 # RecursiveMAS — Extensions and Reflections
 ## A Supplementary Technical Document
 
+> **Author:** Daniele Carmelo Salpietro — [www.salpietro.it](https://www.salpietro.it) — <daniele@salpietro.it>  
 > **Companion to:** Yang et al., *Recursive Multi-Agent Systems*, arXiv:2604.25917, 2026.
 >
 > This document describes engineering extensions implemented on top of the
@@ -721,5 +722,11 @@ DeepSeek-AI (2025). *DeepSeek-R1: Incentivizing Reasoning Capability in LLMs
 via Reinforcement Learning*. arXiv:2501.12948.
 
 ---
+
+---
+
+**Author:** Daniele Carmelo Salpietro  
+Website: [www.salpietro.it](https://www.salpietro.it) · Email: <daniele@salpietro.it>  
+GitHub: [danielesalpietro/RecursiveMAS](https://github.com/danielesalpietro/RecursiveMAS)  
 
 *Document version: 1.0.0 — 2026-06-04*
