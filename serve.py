@@ -82,6 +82,7 @@ from run import (  # noqa: E402
     infer_max_new_tokens,
     resolve_style_paths,
 )
+from hf_resolver import snapshot_repo as _snapshot_repo  # noqa: E402
 import gradio as gr  # noqa: E402
 
 _VERSION = (THIS_DIR / "VERSION").read_text(encoding="utf-8").strip()
@@ -112,6 +113,7 @@ def _run_single_question(
     top_p: float = 0.95,
     seed: int = 42,
     device_map: Optional[Dict[str, str]] = None,
+    model_overrides: Optional[Dict[str, str]] = None,
 ) -> Tuple[str, str]:
     """
     Run the MAS pipeline on one question.
@@ -131,6 +133,13 @@ def _run_single_question(
         # Resolve HF model paths (cached locally after first download)
         paths = resolve_style_paths(style, "math500")
         family = str(STYLE_SPECS[style]["family"])
+        if model_overrides and family == "text_sequential":
+            for role, model_id in model_overrides.items():
+                if model_id and model_id != _LLM_CUSTOM_SENTINEL:
+                    try:
+                        paths[role] = _snapshot_repo(model_id)
+                    except Exception as _e:
+                        print(f"[warn] model override {role}={model_id}: {_e}", flush=True)
         max_new_tokens = infer_max_new_tokens(style, "math500")
 
         # Minimal args namespace consumed by build_cli_for_style
@@ -380,6 +389,12 @@ def respond(
     llm_api_key: str = "",
     llm_pre_enabled: bool = False,
     llm_post_enabled: bool = False,
+    text_planner_model: str = "",
+    text_planner_custom: str = "",
+    text_critic_model: str = "",
+    text_critic_custom: str = "",
+    text_solver_model: str = "",
+    text_solver_custom: str = "",
 ) -> Tuple[List[Dict], List[Dict], str]:
     llm_model = llm_model_custom.strip() if llm_model == _LLM_CUSTOM_SENTINEL else llm_model
     global _CURRENT_STYLE
@@ -416,12 +431,23 @@ def respond(
         if changed:
             pre_query = mas_question
 
+    _text_overrides: Optional[Dict[str, str]] = None
+    if style == "sequential_text":
+        def _res(dd: str, txt: str) -> str:
+            return txt.strip() if dd == _LLM_CUSTOM_SENTINEL else dd
+        _text_overrides = {
+            "planner": _res(text_planner_model, text_planner_custom),
+            "critic":  _res(text_critic_model,  text_critic_custom),
+            "solver":  _res(text_solver_model,   text_solver_custom),
+        }
+
     try:
         t_start = datetime.now()
         stdout, parsed = _run_single_question(
             style, mas_question, device, num_rounds, latent_steps, domain,
             temperature=temperature, top_p=top_p, seed=seed,
             device_map=device_map,
+            model_overrides=_text_overrides,
         )
         t_end = datetime.now()
         elapsed = str(t_end - t_start).split(".")[0]
@@ -692,6 +718,20 @@ def _get_cached_repos() -> Dict[str, int]:
         return {r.repo_id: r.size_on_disk for r in cache_info.repos}
     except Exception:
         return {}
+
+
+def _list_cached_llm_models() -> List[Tuple[str, str]]:
+    """Return (label, repo_id) pairs for cached LLM models, excluding adapter repos."""
+    cached = _get_cached_repos()
+    result: List[Tuple[str, str]] = []
+    for repo_id, size_bytes in sorted(cached.items(), key=lambda x: x[1], reverse=True):
+        if "outerlink" in repo_id.lower():
+            continue
+        short = repo_id.split("/")[-1]
+        size_gb = size_bytes / 1024 ** 3
+        result.append((f"{short}  ·  {size_gb:.1f} GB", repo_id))
+    result.append((_LLM_CUSTOM_SENTINEL, _LLM_CUSTOM_SENTINEL))
+    return result
 
 
 def _fmt_size(b: int) -> str:
