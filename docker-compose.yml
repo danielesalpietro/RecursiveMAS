@@ -21,7 +21,8 @@ services:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - MEM0_THRESHOLD=${MEM0_THRESHOLD:-0.92}
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      # Uncomment to enable LLM-based memory extraction (requires valid quota):
+      # - OPENAI_API_KEY=${OPENAI_API_KEY:-}
     ports:
       - "${MEM0_PORT:-8080}:8080"
 
