@@ -13,6 +13,7 @@ Endpoints:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -59,6 +60,12 @@ def _get_qdrant() -> QdrantClient:
     return _qdrant
 
 
+def _reset_qdrant() -> None:
+    """Force reconnection on the next _get_qdrant() call."""
+    global _qdrant
+    _qdrant = None
+
+
 def _get_embedder() -> SentenceTransformer:
     global _embedder
     if _embedder is None:
@@ -85,9 +92,21 @@ def _ensure_collection(client: QdrantClient) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log.info("Startup: connecting to Qdrant and loading embedder …")
-    _get_qdrant()
+    log.info("Startup: loading embedder …")
     _get_embedder()
+    log.info("Startup: connecting to Qdrant (up to 30 s) …")
+    for attempt in range(10):
+        try:
+            _reset_qdrant()
+            _get_qdrant()
+            break
+        except Exception as exc:
+            if attempt < 9:
+                log.warning("Qdrant not ready (attempt %d/10): %s — retrying in 3 s …",
+                            attempt + 1, exc)
+                await asyncio.sleep(3)
+            else:
+                log.error("Qdrant unavailable after 10 attempts — continuing without pre-connect.")
     log.info("mem0 service ready — all components warm.")
     yield
 
@@ -131,20 +150,41 @@ def health() -> dict:
     return {"status": "ok"}
 
 
+def _collection_missing(exc: Exception) -> bool:
+    return "doesn't exist" in str(exc) or "Not found" in str(exc)
+
+
 @app.post("/search", response_model=SearchResponse)
 def search(req: SearchRequest) -> SearchResponse:
     t0 = time.perf_counter()
     try:
         vector = _get_embedder().encode(req.query).tolist()
-        response = _get_qdrant().query_points(
-            collection_name=_COLLECTION,
-            query=vector,
-            query_filter=Filter(
-                must=[FieldCondition(key="agent_id", match=MatchValue(value=req.agent_id))]
-            ),
-            limit=req.limit,
-            with_payload=True,
-        )
+        try:
+            response = _get_qdrant().query_points(
+                collection_name=_COLLECTION,
+                query=vector,
+                query_filter=Filter(
+                    must=[FieldCondition(key="agent_id", match=MatchValue(value=req.agent_id))]
+                ),
+                limit=req.limit,
+                with_payload=True,
+            )
+        except Exception as inner:
+            if _collection_missing(inner):
+                log.warning("Collection missing, recreating after Qdrant restart …")
+                _reset_qdrant()
+                _ensure_collection(_get_qdrant())
+                response = _get_qdrant().query_points(
+                    collection_name=_COLLECTION,
+                    query=vector,
+                    query_filter=Filter(
+                        must=[FieldCondition(key="agent_id", match=MatchValue(value=req.agent_id))]
+                    ),
+                    limit=req.limit,
+                    with_payload=True,
+                )
+            else:
+                raise
         hits = response.points
     except Exception as exc:
         log.error("search failed: %s", exc)
@@ -177,7 +217,16 @@ def store(req: StoreRequest) -> StoreResponse:
             vector=vector,
             payload={"content": req.content, "agent_id": req.agent_id, **req.metadata},
         )
-        _get_qdrant().upsert(collection_name=_COLLECTION, points=[point])
+        try:
+            _get_qdrant().upsert(collection_name=_COLLECTION, points=[point])
+        except Exception as inner:
+            if _collection_missing(inner):
+                log.warning("Collection missing, recreating after Qdrant restart …")
+                _reset_qdrant()
+                _ensure_collection(_get_qdrant())
+                _get_qdrant().upsert(collection_name=_COLLECTION, points=[point])
+            else:
+                raise
     except Exception as exc:
         log.error("store failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))

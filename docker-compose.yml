@@ -7,6 +7,12 @@ services:
       - qdrant_data:/qdrant/storage
     ports:
       - "6333:6333"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
 
   # ── mem0 semantic cache service ───────────────────────────────────────────────
   mem0:
@@ -16,7 +22,8 @@ services:
     image: recursivemas-mem0:latest
     restart: unless-stopped
     depends_on:
-      - qdrant
+      qdrant:
+        condition: service_healthy
     environment:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
