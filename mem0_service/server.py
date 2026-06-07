@@ -24,11 +24,17 @@ from pydantic import BaseModel, Field
 logging.basicConfig(level=logging.INFO, format="[mem0-service] %(message)s")
 log = logging.getLogger(__name__)
 
-# ── mem0 configuration ────────────────────────────────────────────────────────
+# ── Configuration ─────────────────────────────────────────────────────────────
 
 _QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
 _QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 _EMBED_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+
+# all-MiniLM-L6-v2 → 384 dims; OpenAI ada-002 → 1536 dims.
+# The collection name encodes the dimension so a change of embedder
+# automatically targets a fresh collection (no manual Qdrant cleanup needed).
+_EMBED_DIM = int(os.getenv("EMBED_DIM", "384"))
+_COLLECTION = f"recursivemas_cache_{_EMBED_DIM}"
 
 _config: dict = {
     "vector_store": {
@@ -36,7 +42,7 @@ _config: dict = {
         "config": {
             "host": _QDRANT_HOST,
             "port": _QDRANT_PORT,
-            "collection_name": "recursivemas_cache",
+            "collection_name": _COLLECTION,
         },
     },
     "embedder": {
@@ -57,7 +63,9 @@ if os.getenv("OPENAI_API_KEY"):
 else:
     log.info("No OPENAI_API_KEY — mem0 will store raw text (no LLM extraction)")
 
-from mem0 import Memory  # noqa: E402 — import after config is ready
+log.info("Using Qdrant collection '%s' (embed_dim=%d)", _COLLECTION, _EMBED_DIM)
+
+from mem0 import Memory  # noqa: E402
 
 _mem: Memory | None = None
 
@@ -113,13 +121,23 @@ def health() -> dict:
 def search(req: SearchRequest) -> SearchResponse:
     t0 = time.perf_counter()
     try:
+        # mem0 v2+ requires agent_id scoping via filters, not as a top-level param
+        raw = _get_mem().search(
+            req.query,
+            filters={"agent_id": req.agent_id},
+            limit=req.limit,
+        )
+    except TypeError:
+        # Fallback for older mem0 versions that still accept agent_id directly
         raw = _get_mem().search(req.query, agent_id=req.agent_id, limit=req.limit)
     except Exception as exc:
         log.error("search failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
     results = []
-    for item in raw:
+    # mem0 may return a plain list or a dict with a 'results' key
+    items = raw if isinstance(raw, list) else raw.get("results", [])
+    for item in items:
         if isinstance(item, dict):
             results.append(
                 SearchResult(
