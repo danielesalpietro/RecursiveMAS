@@ -114,6 +114,7 @@ def _run_single_question(
     temperature: float = 0.6,
     top_p: float = 0.95,
     seed: int = 42,
+    use_cache: bool = True,
 ) -> Tuple[str, str]:
     """
     Run the MAS pipeline on one question.
@@ -121,14 +122,16 @@ def _run_single_question(
 
     PRE:  check mem0 semantic cache — if hit, skip the entire pipeline.
     POST: store the result in mem0 for future reuse.
+    Both steps are skipped when use_cache=False.
     """
     import argparse as _ap
 
     # ── PRE: semantic cache lookup ────────────────────────────────────────────
-    cached = semantic_cache.lookup(question, style, domain)
-    if cached is not None:
-        stdout = f"[semantic cache HIT — inference skipped]\nAnswer: {cached}\n"
-        return stdout, cached
+    if use_cache:
+        cached = semantic_cache.lookup(question, style, domain)
+        if cached is not None:
+            stdout = f"[semantic cache HIT — inference skipped]\nAnswer: {cached}\n"
+            return stdout, cached
 
     set_active_domain(domain)
 
@@ -198,7 +201,7 @@ def _run_single_question(
                     break
 
         # ── POST: store in semantic cache ─────────────────────────────────────
-        if parsed:
+        if use_cache and parsed:
             semantic_cache.store(question, parsed, style, domain, inference_ms)
 
         return stdout, parsed
@@ -277,6 +280,9 @@ def _build_reply(
             )
 
     if run_info:
+        cache_status = "disabled"
+        if run_info.get("use_cache"):
+            cache_status = "HIT ⚡" if run_info.get("cache_hit") else "miss"
         info = (
             f"| Parameter | Value |\n"
             f"|-----------|-------|\n"
@@ -289,6 +295,7 @@ def _build_reply(
             f"| Top-p | {run_info['top_p']} |\n"
             f"| Seed | {run_info['seed']} |\n"
             f"| Device | `{run_info['device']}` |\n"
+            f"| Semantic cache | {cache_status} |\n"
             f"| Started | {run_info['started']} |\n"
             f"| Finished | {run_info['finished']} |\n"
             f"| Elapsed | {run_info['elapsed']} |"
@@ -311,6 +318,7 @@ def respond(
     temperature: float,
     top_p: float,
     seed: int,
+    use_cache: bool = True,
 ) -> Tuple[List[Dict], List[Dict], str]:
     global _CURRENT_STYLE
 
@@ -332,10 +340,11 @@ def respond(
         t_start = datetime.now()
         stdout, parsed = _run_single_question(
             style, message, device, num_rounds, latent_steps, domain,
-            temperature=temperature, top_p=top_p, seed=seed,
+            temperature=temperature, top_p=top_p, seed=seed, use_cache=use_cache,
         )
         t_end = datetime.now()
         elapsed = str(t_end - t_start).split(".")[0]  # HH:MM:SS
+        cache_hit = stdout.startswith("[semantic cache HIT")
         run_info = {
             "version": _VERSION,
             "style": style,
@@ -346,6 +355,8 @@ def respond(
             "temperature": temperature,
             "top_p": top_p,
             "seed": seed,
+            "use_cache": use_cache,
+            "cache_hit": cache_hit,
             "started": t_start.strftime("%Y-%m-%d %H:%M:%S"),
             "finished": t_end.strftime("%Y-%m-%d %H:%M:%S"),
             "elapsed": elapsed,
@@ -738,6 +749,11 @@ def build_ui() -> gr.Blocks:
                         latent_sl = gr.Slider(8, 64, value=32, step=8, label="Latent steps")
                         device_dd = gr.Dropdown(choices=device_opts, value=device_opts[0], label="Device")
                         gr.Markdown(_vram_note)
+                        cache_chk = gr.Checkbox(
+                            value=True,
+                            label="Semantic cache (mem0)",
+                            info="Skip inference for semantically identical past questions",
+                        )
                         with gr.Accordion("Advanced settings", open=False):
                             temperature_sl = gr.Slider(
                                 0.0, 1.0, value=0.6, step=0.05,
@@ -773,6 +789,7 @@ def build_ui() -> gr.Blocks:
                             msg, state, style_dd, domain_dd,
                             rounds_sl, latent_sl, device_dd,
                             temperature_sl, top_p_sl, seed_num,
+                            cache_chk,
                         ],
                         outputs=[chatbot, state, msg],
                     )
