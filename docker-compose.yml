@@ -15,15 +15,16 @@ services:
       dockerfile: Dockerfile
     image: recursivemas-mem0:latest
     restart: unless-stopped
+    env_file:
+      - path: .env.docker
+        required: false
+      - path: .env
+        required: false
     depends_on:
       - qdrant
     environment:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
-      - MEM0_THRESHOLD=${MEM0_THRESHOLD:-0.92}
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-    ports:
-      - "${MEM0_PORT:-8080}:8080"
 
   # ── Batch evaluation ────────────────────────────────────────────────────────
   recursivemas:
@@ -38,13 +39,13 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    env_file:
+      - path: .env.docker
+        required: false
+      - path: .env
+        required: false
     depends_on:
       - mem0
-    environment:
-      - HF_TOKEN=${HF_TOKEN:-}
-      - TAVILY_API_KEY=${TAVILY_API_KEY:-}
-      - MEM0_URL=http://mem0:8080
-      - MEM0_THRESHOLD=${MEM0_THRESHOLD:-0.92}
     volumes:
       - hf_cache:/hf_cache
     # Override with your desired --style, --dataset, etc.
@@ -69,17 +70,13 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    env_file:
+      - path: .env.docker
+        required: false
+      - path: .env
+        required: false
     depends_on:
       - mem0
-    environment:
-      - HF_TOKEN=${HF_TOKEN:-}
-      - TAVILY_API_KEY=${TAVILY_API_KEY:-}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - OPENAI_COMPAT_ENDPOINT=${OPENAI_COMPAT_ENDPOINT:-}
-      - OPENAI_COMPAT_MODEL=${OPENAI_COMPAT_MODEL:-}
-      - MEM0_URL=http://mem0:8080
-      - MEM0_THRESHOLD=${MEM0_THRESHOLD:-0.92}
     volumes:
       - hf_cache:/hf_cache
     ports:
