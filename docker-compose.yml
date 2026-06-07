@@ -1,4 +1,30 @@
 services:
+  # ── Qdrant vector DB (used by mem0 service) ──────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ports:
+      - "6333:6333"
+
+  # ── mem0 semantic cache service ───────────────────────────────────────────────
+  mem0:
+    build:
+      context: ./mem0_service
+      dockerfile: Dockerfile
+    image: recursivemas-mem0:latest
+    restart: unless-stopped
+    depends_on:
+      - qdrant
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - MEM0_THRESHOLD=${MEM0_THRESHOLD:-0.92}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    ports:
+      - "${MEM0_PORT:-8080}:8080"
+
   # ── Batch evaluation ────────────────────────────────────────────────────────
   recursivemas:
     build: .
@@ -12,9 +38,13 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    depends_on:
+      - mem0
     environment:
       - HF_TOKEN=${HF_TOKEN:-}
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
+      - MEM0_URL=http://mem0:8080
+      - MEM0_THRESHOLD=${MEM0_THRESHOLD:-0.92}
     volumes:
       - hf_cache:/hf_cache
     # Override with your desired --style, --dataset, etc.
@@ -39,6 +69,8 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    depends_on:
+      - mem0
     environment:
       - HF_TOKEN=${HF_TOKEN:-}
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
@@ -46,6 +78,8 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - OPENAI_COMPAT_ENDPOINT=${OPENAI_COMPAT_ENDPOINT:-}
       - OPENAI_COMPAT_MODEL=${OPENAI_COMPAT_MODEL:-}
+      - MEM0_URL=http://mem0:8080
+      - MEM0_THRESHOLD=${MEM0_THRESHOLD:-0.92}
     volumes:
       - hf_cache:/hf_cache
     ports:
@@ -58,3 +92,4 @@ services:
 
 volumes:
   hf_cache:
+  qdrant_data:

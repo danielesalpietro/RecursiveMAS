@@ -24,6 +24,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import time
+
 import torch
 
 # ── Path setup ───────────────────────────────────────────────────────────────
@@ -84,6 +86,7 @@ from run import (  # noqa: E402
 )
 from hf_resolver import snapshot_repo as _snapshot_repo  # noqa: E402
 import gradio as gr  # noqa: E402
+import semantic_cache  # noqa: E402
 
 _VERSION = (THIS_DIR / "VERSION").read_text(encoding="utf-8").strip()
 
@@ -114,12 +117,24 @@ def _run_single_question(
     seed: int = 42,
     device_map: Optional[Dict[str, str]] = None,
     model_overrides: Optional[Dict[str, str]] = None,
+    use_cache: bool = True,
 ) -> Tuple[str, str]:
     """
     Run the MAS pipeline on one question.
     Returns (captured_stdout, parsed_answer_string).
+
+    PRE:  check mem0 semantic cache — if hit, skip the entire pipeline.
+    POST: store the result in mem0 for future reuse.
+    Both steps are skipped when use_cache=False.
     """
     import argparse as _ap
+
+    # ── PRE: semantic cache lookup ────────────────────────────────────────────
+    if use_cache:
+        cached = semantic_cache.lookup(question, style, domain)
+        if cached is not None:
+            stdout = f"[semantic cache HIT — inference skipped]\nAnswer: {cached}\n"
+            return stdout, cached
 
     set_active_domain(domain)
 
@@ -184,11 +199,13 @@ def _run_single_question(
 
         captured = _TeeCapture()
         old_argv, sys.argv = sys.argv[:], [module.__file__ or "serve"] + cli_args
+        t0 = time.perf_counter()
         try:
             with contextlib.redirect_stdout(captured):
                 module.main()
         finally:
             sys.argv = old_argv
+        inference_ms = (time.perf_counter() - t0) * 1000
 
         stdout = captured.getvalue()
 
@@ -204,6 +221,10 @@ def _run_single_question(
                         or ""
                     )
                     break
+
+        # ── POST: store in semantic cache ─────────────────────────────────────
+        if use_cache and parsed:
+            semantic_cache.store(question, parsed, style, domain, inference_ms)
 
         return stdout, parsed
 
@@ -346,6 +367,9 @@ def _build_reply(
             f"prompt: {_tok['prompt']:,} · generated: {_tok['generated']:,} · total: {_tok['total']:,}"
             if _tok else "—"
         )
+        cache_status = "disabled"
+        if run_info.get("use_cache"):
+            cache_status = "HIT ⚡" if run_info.get("cache_hit") else "miss"
         info = (
             f"| Parameter | Value |\n"
             f"|-----------|-------|\n"
@@ -358,6 +382,7 @@ def _build_reply(
             f"| Top-p | {run_info['top_p']} |\n"
             f"| Seed | {run_info['seed']} |\n"
             f"| Device | `{run_info['device']}` |\n"
+            f"| Semantic cache | {cache_status} |\n"
             f"| Started | {run_info['started']} |\n"
             f"| Finished | {run_info['finished']} |\n"
             f"| Elapsed | {run_info['elapsed']} |\n"
@@ -395,6 +420,7 @@ def respond(
     text_critic_custom: str = "",
     text_solver_model: str = "",
     text_solver_custom: str = "",
+    use_cache: bool = True,
 ) -> Tuple[List[Dict], List[Dict], str]:
     llm_model = llm_model_custom.strip() if llm_model == _LLM_CUSTOM_SENTINEL else llm_model
     global _CURRENT_STYLE
@@ -448,14 +474,17 @@ def respond(
             temperature=temperature, top_p=top_p, seed=seed,
             device_map=device_map,
             model_overrides=_text_overrides,
+            use_cache=use_cache,
         )
         t_end = datetime.now()
         elapsed = str(t_end - t_start).split(".")[0]
 
+        cache_hit = stdout.startswith("[semantic cache HIT")
+
         # ── Post-processing ───────────────────────────────────────────────────
         agents = _parse_agent_outputs(stdout)
         pp_result: Optional[str] = None
-        if llm_post_enabled and effective_backend != "Disabled":
+        if llm_post_enabled and effective_backend != "Disabled" and not cache_hit:
             pp_result = _postprocess_with_llm(
                 question=message,   # original question (user's language)
                 style=style,
@@ -480,6 +509,8 @@ def respond(
             "seed": seed,
             "llm_backend": effective_backend,
             "llm_model": llm_model or "default",
+            "use_cache": use_cache,
+            "cache_hit": cache_hit,
             "started": t_start.strftime("%Y-%m-%d %H:%M:%S"),
             "finished": t_end.strftime("%Y-%m-%d %H:%M:%S"),
             "elapsed": elapsed,
@@ -1740,6 +1771,11 @@ def build_ui() -> gr.Blocks:
                         vram_status_md = gr.Markdown(
                             _vram_status_md(device_opts[0], "sequential_light"),
                         )
+                        cache_chk = gr.Checkbox(
+                            value=True,
+                            label="Semantic cache (mem0)",
+                            info="Return instantly for semantically identical past questions",
+                        )
                         with gr.Accordion("Advanced settings", open=False):
                             temperature_sl = gr.Slider(
                                 0.0, 1.0, value=0.6, step=0.05,
@@ -1883,6 +1919,7 @@ def build_ui() -> gr.Blocks:
                             txt_planner_dd, txt_planner_custom,
                             txt_critic_dd, txt_critic_custom,
                             txt_solver_dd, txt_solver_custom,
+                            cache_chk,
                         ],
                         outputs=[chatbot, state, msg],
                     )
