@@ -24,6 +24,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import time
+
 import torch
 
 # ── Path setup ───────────────────────────────────────────────────────────────
@@ -83,6 +85,7 @@ from run import (  # noqa: E402
     resolve_style_paths,
 )
 import gradio as gr  # noqa: E402
+import semantic_cache  # noqa: E402
 
 _VERSION = (THIS_DIR / "VERSION").read_text(encoding="utf-8").strip()
 
@@ -115,8 +118,17 @@ def _run_single_question(
     """
     Run the MAS pipeline on one question.
     Returns (captured_stdout, parsed_answer_string).
+
+    PRE:  check mem0 semantic cache — if hit, skip the entire pipeline.
+    POST: store the result in mem0 for future reuse.
     """
     import argparse as _ap
+
+    # ── PRE: semantic cache lookup ────────────────────────────────────────────
+    cached = semantic_cache.lookup(question, style, domain)
+    if cached is not None:
+        stdout = f"[semantic cache HIT — inference skipped]\nAnswer: {cached}\n"
+        return stdout, cached
 
     set_active_domain(domain)
 
@@ -162,11 +174,13 @@ def _run_single_question(
         # Run with stdout captured
         captured = io.StringIO()
         old_argv, sys.argv = sys.argv[:], [module.__file__ or "serve"] + cli_args
+        t0 = time.perf_counter()
         try:
             with contextlib.redirect_stdout(captured):
                 module.main()
         finally:
             sys.argv = old_argv
+        inference_ms = (time.perf_counter() - t0) * 1000
 
         stdout = captured.getvalue()
 
@@ -182,6 +196,10 @@ def _run_single_question(
                         or ""
                     )
                     break
+
+        # ── POST: store in semantic cache ─────────────────────────────────────
+        if parsed:
+            semantic_cache.store(question, parsed, style, domain, inference_ms)
 
         return stdout, parsed
 
