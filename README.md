@@ -19,7 +19,7 @@ Scaling agent collaboration through latent-space recursion.
     <a href="https://www.linkedin.com/posts/jiaruzou_recursivemas-recurisvelearning-multiagentsystems-ugcPost-7455645681341493248-ioLJ/?utm_source=share&utm_medium=member_desktop&rcm=ACoAADc5TzgBN_tNOuzpi7kE7n6dZ0y13EkxZOs"><img src="https://img.shields.io/badge/LinkedIn-Coverage-0A66C2.svg?logo=linkedin&logoColor=white" alt="LinkedIn Coverage"></a>
     <a href="https://x.com/Jiaru_Zou/status/2049551828296389118"><img src="https://img.shields.io/badge/Twitter-Coverage-1DA1F2.svg?logo=x" alt="Twitter Coverage"></a>
     <a href="https://venturebeat.com/ai/how-recursivemas-speeds-up-multi-agent-inference-by-2-4x-and-reduces-token-usage-by-75"><img src="https://img.shields.io/badge/Venture-Beat-EE1C25.svg?labelColor=111111&color=EE1C25&logo=venturebeat&logoColor=white" alt="VentureBeat Coverage"></a>
-    <a href="https://github.com/danielesalpietro/RecursiveMAS/blob/feature/domain-system-prompts/VERSION"><img src="https://img.shields.io/badge/HOUSE-v1.1.1-4CAF50.svg" alt="HOUSE Version"></a>
+    <a href="https://github.com/danielesalpietro/RecursiveMAS/blob/feature/mem0-semantic-cache-v2/VERSION"><img src="https://img.shields.io/badge/HOUSE-v1.2.0-4CAF50.svg" alt="HOUSE Version"></a>
 </p>
 
 
@@ -28,6 +28,8 @@ Scaling agent collaboration through latent-space recursion.
 </p>
 
 ## 📰 News
+
+**[2026.06.07]** **HOUSE v1.2.0** — Semantic cache layer (Qdrant + sentence-transformers) gives the agents long-term memory: identical or near-identical questions are answered **instantly** from the vector store, skipping the entire Planner→Critic→Solver pipeline. Cache persists across restarts. See [Changelog](#-changelog) for details.
 
 **[2026.05.29]** **HOUSE v1.1.1** — Gradio web UI rebrand with Chat and Batch Evaluation modes, domain-specific agent prompts, advanced inference controls, full run metadata, and evaluation parser bias fixes. See [Changelog](#-changelog) for details.
 
@@ -59,6 +61,8 @@ Scaling agent collaboration through latent-space recursion.
 ✅ Docker GPU + CPU support with 3-level health checks.
 
 ✅ Domain-specific agent prompts (general, medical, software engineering, scientific research).
+
+✅ Semantic cache (Qdrant + sentence-transformers) — persistent long-term memory, instant cache HITs, no API key required.
 
 ☑️ Add Complete Inference Pipeline Across All Downstreams.
 
@@ -137,6 +141,8 @@ docker compose up serve
 ```
 
 Open [http://localhost:7860](http://localhost:7860). The UI exposes all 5 collaboration styles. Models are loaded into VRAM on the first request and stay warm for subsequent ones — no reload between questions.
+
+> **Semantic cache** is started automatically as part of `docker compose up serve` (via the `mem0` and `qdrant` services declared in `docker-compose.yml`). No extra steps needed — see the [Semantic Cache](#-semantic-cache) section below for details.
 
 <p align="center">
   <img src="assets/webui.png" width="90%" alt="HOUSE — RecursiveMAS Web UI">
@@ -272,6 +278,7 @@ Only one batch run can execute at a time. The Chat tab displays a warning if a b
 | Recursive rounds | Both | 3 | 1–5 |
 | Latent steps | Both | 32 | 8–64, step 8 |
 | Device | Both | `cuda` / `cpu` | Auto-detected |
+| Semantic cache | Both | enabled | Skip inference on semantically identical past questions |
 | Temperature *(advanced)* | Both | 0.6 | 0.0–1.0 |
 | Top-p *(advanced)* | Both | 0.95 | 0.0–1.0 |
 | Seed *(advanced)* | Both | 42 | Integer, for reproducibility |
@@ -282,21 +289,24 @@ Only one batch run can execute at a time. The Chat tab displays a warning if a b
 Every chat reply includes a collapsible **Run info** table with all parameters used, start/end timestamps, and elapsed time — making every result fully reproducible:
 
 ```
-| Parameter        | Value             |
-|------------------|-------------------|
-| Version          | v1.1.1            |
-| Style            | sequential_light  |
-| Domain           | medical_emergency |
-| Recursive rounds | 3                 |
-| Latent steps     | 32                |
-| Temperature      | 0.6               |
-| Top-p            | 0.95              |
-| Seed             | 42                |
-| Device           | cuda              |
-| Started          | 2026-05-29 17:12:54 |
-| Finished         | 2026-05-29 17:13:09 |
-| Elapsed          | 0:00:15           |
+| Parameter        | Value               |
+|------------------|---------------------|
+| Version          | v1.2.0              |
+| Style            | sequential_light    |
+| Domain           | medical_emergency   |
+| Recursive rounds | 3                   |
+| Latent steps     | 32                  |
+| Temperature      | 0.6                 |
+| Top-p            | 0.95                |
+| Seed             | 42                  |
+| Device           | cuda                |
+| Semantic cache   | HIT ⚡              |
+| Started          | 2026-06-07 10:05:01 |
+| Finished         | 2026-06-07 10:05:01 |
+| Elapsed          | 0:00:00             |
 ```
+
+When the cache is active, `Elapsed` drops to `0:00:00` and `Semantic cache` shows `HIT ⚡` — the full Planner→Critic→Solver pipeline was skipped entirely.
 
 ### 🌐 Domain-Specific Agent Prompts
 
@@ -403,6 +413,7 @@ RecursiveMAS/
 ├── __init__.py
 ├── run.py                          # unified CLI entry point for batch inference
 ├── serve.py                        # HOUSE web UI (Chat + Batch Evaluation tabs)
+├── semantic_cache.py               # fail-open HTTP client for the semantic cache service
 ├── healthcheck.py                  # 3-level container health check
 ├── load_from_repo.py
 ├── hf_resolver.py
@@ -413,10 +424,15 @@ RecursiveMAS/
 ├── requirements-serve.txt          # extra deps for serve.py (gradio)
 ├── Dockerfile                      # batch inference image
 ├── Dockerfile.serve                # HOUSE web UI image
-├── docker-compose.yml              # orchestrates both services + shared hf_cache volume
+├── docker-compose.yml              # orchestrates all services + shared volumes
 ├── .dockerignore
 ├── .env.example                    # template — copy to .env and fill in keys
+├── .env.docker                     # Docker-specific env template (do not commit .env)
 ├── serve-cpu.bat                   # Windows one-click CPU launch (no GPU required)
+├── mem0_service/                   # semantic cache microservice
+│   ├── Dockerfile                  # Python 3.11-slim, pre-downloads embedding model
+│   ├── requirements.txt            # fastapi, qdrant-client, sentence-transformers
+│   └── server.py                   # FastAPI REST server (POST /search, POST /store, GET /health)
 ├── assets/
 ├── dataset/
 └── inference_utils/
@@ -476,7 +492,89 @@ python run.py --style deliberation --batch_size 16 --temperature 0.6 --top_p 0.9
 
 ---
 
+## 🧠 Semantic Cache
+
+RecursiveMAS integrates a **persistent semantic cache** that gives the multi-agent system a form of long-term memory: answers that were hard-won through a full Planner→Critic→Solver deliberation are stored and reused the next time a semantically equivalent question is asked — even if the wording differs.
+
+### How it works
+
+```
+User question
+      │
+      ▼
+ ┌─────────────────────────────────┐
+ │  semantic_cache.lookup()        │  cosine similarity search in Qdrant
+ │  threshold: 0.92 (configurable) │
+ └────────────┬────────────────────┘
+              │
+       HIT ───┴──► return cached answer instantly (0 ms inference)
+              │
+       MISS   ▼
+ ┌─────────────────────────────────┐
+ │  Planner → Critic → Solver      │  full MAS inference pipeline
+ └────────────┬────────────────────┘
+              │
+              ▼
+ semantic_cache.store()  ──► Qdrant upsert (guaranteed write)
+```
+
+1. **PRE-model lookup** — before touching any LLM, the question is embedded with `sentence-transformers/all-MiniLM-L6-v2` (384-dim, fully local) and compared against stored vectors in Qdrant via cosine similarity.
+2. **Threshold gate** — only results above `MEM0_THRESHOLD` (default `0.92`) are considered a HIT. This prevents superficially similar but semantically different questions from returning stale answers.
+3. **POST-model store** — when inference completes, the question + parsed answer are stored in Qdrant as a new vector, making the answer available for all future requests.
+4. **Scoped by config** — cache entries are tagged with an `agent_id` of the form `recursivemas__{style}__{domain}` (e.g. `recursivemas__sequential_light__medical_emergency`). Different MAS configurations never share cache entries, preventing cross-contamination.
+
+### Architecture
+
+| Component | Role |
+|-----------|------|
+| `mem0_service/server.py` | FastAPI microservice exposing `POST /search`, `POST /store`, `GET /health` |
+| Qdrant | Vector database storing all embeddings and payloads |
+| `sentence-transformers/all-MiniLM-L6-v2` | Local embedding model — no API key, no external calls |
+| `semantic_cache.py` | Fail-open HTTP client in RecursiveMAS — if the service is unreachable, inference continues normally |
+
+### Persistence
+
+Cache vectors are stored in the `qdrant_data` named Docker volume. They **survive container restarts** — a simple `docker compose down` + `docker compose up` leaves all cached answers intact. Vectors are only deleted if you explicitly remove the volume:
+
+```bash
+docker compose down -v   # ⚠️ deletes qdrant_data and hf_cache — clears the cache
+```
+
+### Configuration
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `MEM0_THRESHOLD` | `0.92` | Cosine similarity threshold (0–1). Lower = more aggressive caching. |
+| `MEM0_URL` | `http://mem0:8080` | Base URL of the cache service (Docker internal network) |
+| `MEM0_TIMEOUT_S` | `3.0` | Per-request timeout; on timeout the cache is skipped transparently |
+| `MEM0_PORT` | `8080` | Host port for the cache service |
+| `EMBED_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | HuggingFace model for embedding |
+| `EMBED_DIM` | `384` | Embedding dimension (must match the model above) |
+
+### Benefits
+
+- **Zero inference cost on repeated questions** — elapsed time drops to `0:00:00` for cache HITs; GPU stays idle.
+- **Persistent experience** — agents accumulate knowledge across sessions. The more the system is used, the faster it gets on recurring topics.
+- **No API dependency** — the embedding model runs locally inside the `mem0` container; no OpenAI key or network call required.
+- **Fail-open** — if Qdrant or the `mem0` service is down, `semantic_cache.py` catches the exception and lets inference proceed normally. The cache is always opt-in from the user perspective (UI toggle).
+- **Configurable aggressiveness** — lower the threshold to cache paraphrases; raise it to require near-exact rewording.
+
+---
+
 ## 📋 Changelog
+
+### v1.2.0 — 2026-06-07
+
+#### 🧠 Semantic Cache (`mem0_service/`, `semantic_cache.py`, `serve.py`)
+
+- **Persistent vector memory** — Qdrant + `sentence-transformers/all-MiniLM-L6-v2` replace the previous mem0ai abstraction. Every answered question is embedded and upserted directly into Qdrant; subsequent semantically equivalent questions return instantly from cache without running any LLM.
+- **`mem0_service/`** — new FastAPI microservice (`POST /search`, `POST /store`, `GET /health`). Embeddings are computed locally at build time (model pre-downloaded in Dockerfile); no OpenAI key or external network call required.
+- **`semantic_cache.py`** — fail-open HTTP client. On timeout or service error, returns `None` and lets inference proceed normally; the cache is never a single point of failure.
+- **Cache scoping** — entries are tagged `recursivemas__{style}__{domain}` so different MAS configurations never share answers.
+- **UI toggle** — "Semantic cache (mem0)" checkbox in the HOUSE interface; disabling it bypasses both lookup and store for the current request.
+- **Run Info row** — every reply now shows `Semantic cache | HIT ⚡` or `miss` in the metadata table. On a HIT, `Elapsed` reads `0:00:00`.
+- **Docker** — `qdrant` and `mem0` added as services in `docker-compose.yml`; both `serve` and `recursivemas` declare `depends_on: [mem0]`. Cache data persists in the `qdrant_data` named volume across restarts.
+- **Configurable threshold** — `MEM0_THRESHOLD` env var (default `0.92`) controls how similar a question must be before a cached answer is returned.
 
 ### v1.1.1 — 2026-05-29
 
