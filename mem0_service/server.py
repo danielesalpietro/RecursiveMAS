@@ -1,25 +1,35 @@
 #!/usr/bin/env python3
 """
-Lightweight mem0 REST service for RecursiveMAS semantic cache.
+Semantic cache REST service for RecursiveMAS.
 
-Exposes three endpoints:
+Uses Qdrant + sentence-transformers directly — no LLM needed.
+Every store() writes to Qdrant; every search() returns the most
+similar past answer above the configured threshold.
+
+Endpoints:
   POST /search  — find semantically similar past answers
   POST /store   — persist a new Q&A pair
   GET  /health  — liveness probe
-
-Vector store: Qdrant (self-hosted, separate container)
-Embedder:     sentence-transformers/all-MiniLM-L6-v2 (local, no API key needed)
-LLM:          optional — set OPENAI_API_KEY for mem0 memory extraction;
-              without it mem0 stores raw text (still works for caching).
 """
 from __future__ import annotations
 
 import logging
 import os
 import time
+import uuid
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
+from qdrant_client import QdrantClient
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchValue,
+    PointStruct,
+    VectorParams,
+)
+from sentence_transformers import SentenceTransformer
 
 logging.basicConfig(level=logging.INFO, format="[mem0-service] %(message)s")
 log = logging.getLogger(__name__)
@@ -29,60 +39,50 @@ log = logging.getLogger(__name__)
 _QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
 _QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 _EMBED_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+_EMBED_DIM   = int(os.getenv("EMBED_DIM", "384"))
+_COLLECTION  = f"recursivemas_cache_{_EMBED_DIM}"
 
-# all-MiniLM-L6-v2 → 384 dims; OpenAI ada-002 → 1536 dims.
-# The collection name encodes the dimension so a change of embedder
-# automatically targets a fresh collection (no manual Qdrant cleanup needed).
-_EMBED_DIM = int(os.getenv("EMBED_DIM", "384"))
-_COLLECTION = f"recursivemas_cache_{_EMBED_DIM}"
+log.info("Qdrant collection: '%s'  embed_dim=%d", _COLLECTION, _EMBED_DIM)
 
-_config: dict = {
-    "vector_store": {
-        "provider": "qdrant",
-        "config": {
-            "host": _QDRANT_HOST,
-            "port": _QDRANT_PORT,
-            "collection_name": _COLLECTION,
-            "embedding_model_dims": _EMBED_DIM,  # force correct dims regardless of LLM provider
-        },
-    },
-    "embedder": {
-        "provider": "huggingface",
-        "config": {"model": _EMBED_MODEL},
-    },
-}
+# ── Clients (lazy-init on first request) ─────────────────────────────────────
 
-if os.getenv("OPENAI_API_KEY"):
-    _config["llm"] = {
-        "provider": "openai",
-        "config": {
-            "api_key": os.getenv("OPENAI_API_KEY"),
-            "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-        },
-    }
-    log.info("LLM memory extraction enabled (OpenAI)")
-else:
-    log.info("No OPENAI_API_KEY — mem0 will store raw text (no LLM extraction)")
-
-log.info("Using Qdrant collection '%s' (embed_dim=%d)", _COLLECTION, _EMBED_DIM)
-
-from mem0 import Memory  # noqa: E402
-
-_mem: Memory | None = None
+_qdrant: QdrantClient | None = None
+_embedder: SentenceTransformer | None = None
 
 
-def _get_mem() -> Memory:
-    global _mem
-    if _mem is None:
-        log.info("Initialising mem0 Memory instance …")
-        _mem = Memory.from_config(_config)
-        log.info("mem0 ready.")
-    return _mem
+def _get_qdrant() -> QdrantClient:
+    global _qdrant
+    if _qdrant is None:
+        _qdrant = QdrantClient(host=_QDRANT_HOST, port=_QDRANT_PORT)
+        _ensure_collection(_qdrant)
+    return _qdrant
+
+
+def _get_embedder() -> SentenceTransformer:
+    global _embedder
+    if _embedder is None:
+        log.info("Loading embedder '%s' …", _EMBED_MODEL)
+        _embedder = SentenceTransformer(_EMBED_MODEL)
+        log.info("Embedder ready.")
+    return _embedder
+
+
+def _ensure_collection(client: QdrantClient) -> None:
+    try:
+        client.get_collection(_COLLECTION)
+        log.info("Collection '%s' already exists.", _COLLECTION)
+    except Exception:
+        log.info("Creating collection '%s' …", _COLLECTION)
+        client.create_collection(
+            collection_name=_COLLECTION,
+            vectors_config=VectorParams(size=_EMBED_DIM, distance=Distance.COSINE),
+        )
+        log.info("Collection '%s' created.", _COLLECTION)
 
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
-app = FastAPI(title="RecursiveMAS mem0 Cache Service", version="1.0.0")
+app = FastAPI(title="RecursiveMAS Semantic Cache", version="2.0.0")
 
 
 class SearchRequest(BaseModel):
@@ -122,29 +122,28 @@ def health() -> dict:
 def search(req: SearchRequest) -> SearchResponse:
     t0 = time.perf_counter()
     try:
-        # mem0 v2+ scopes via user_id (agent_id as top-level param was removed)
-        raw = _get_mem().search(
-            req.query,
-            user_id=req.agent_id,
+        vector = _get_embedder().encode(req.query).tolist()
+        hits = _get_qdrant().search(
+            collection_name=_COLLECTION,
+            query_vector=vector,
+            query_filter=Filter(
+                must=[FieldCondition(key="agent_id", match=MatchValue(value=req.agent_id))]
+            ),
             limit=req.limit,
+            with_payload=True,
         )
     except Exception as exc:
         log.error("search failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
-    results = []
-    # mem0 may return a plain list or a dict with a 'results' key
-    items = raw if isinstance(raw, list) else raw.get("results", [])
-    for item in items:
-        if isinstance(item, dict):
-            results.append(
-                SearchResult(
-                    memory=item.get("memory", item.get("text", "")),
-                    score=float(item.get("score", item.get("similarity", 0.0))),
-                    metadata=item.get("metadata", {}),
-                )
-            )
-
+    results = [
+        SearchResult(
+            memory=h.payload.get("content", ""),
+            score=h.score,
+            metadata={k: v for k, v in h.payload.items() if k not in ("content", "agent_id")},
+        )
+        for h in hits
+    ]
     latency_ms = (time.perf_counter() - t0) * 1000
     log.info("search '%s…' → %d results (%.1f ms)", req.query[:60], len(results), latency_ms)
     return SearchResponse(results=results, latency_ms=latency_ms)
@@ -154,12 +153,17 @@ def search(req: SearchRequest) -> SearchResponse:
 def store(req: StoreRequest) -> StoreResponse:
     t0 = time.perf_counter()
     try:
-        # Use user_id for scoping — consistent with search() in mem0 v2+
-        _get_mem().add(req.content, user_id=req.agent_id, metadata=req.metadata)
+        vector = _get_embedder().encode(req.content).tolist()
+        point = PointStruct(
+            id=str(uuid.uuid4()),
+            vector=vector,
+            payload={"content": req.content, "agent_id": req.agent_id, **req.metadata},
+        )
+        _get_qdrant().upsert(collection_name=_COLLECTION, points=[point])
     except Exception as exc:
         log.error("store failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
     latency_ms = (time.perf_counter() - t0) * 1000
-    log.info("stored entry for agent_id='%s' (%.1f ms)", req.agent_id, latency_ms)
+    log.info("stored  agent_id='%s' (%.1f ms)", req.agent_id, latency_ms)
     return StoreResponse(status="ok", latency_ms=latency_ms)
