@@ -96,7 +96,12 @@ def store(
     try:
         resp = requests.post(
             f"{_MEM0_URL}/store",
-            json={"content": content, "agent_id": _agent_id(style, domain), "metadata": metadata},
+            json={
+                "query": question,    # embedded for similarity search (question only)
+                "content": content,   # full Q&A stored in payload for retrieval
+                "agent_id": _agent_id(style, domain),
+                "metadata": metadata,
+            },
             timeout=_TIMEOUT,
         )
         resp.raise_for_status()

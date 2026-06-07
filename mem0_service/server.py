@@ -17,6 +17,7 @@ import logging
 import os
 import time
 import uuid
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -44,7 +45,7 @@ _COLLECTION  = f"recursivemas_cache_{_EMBED_DIM}"
 
 log.info("Qdrant collection: '%s'  embed_dim=%d", _COLLECTION, _EMBED_DIM)
 
-# ── Clients (lazy-init on first request) ─────────────────────────────────────
+# ── Clients ───────────────────────────────────────────────────────────────────
 
 _qdrant: QdrantClient | None = None
 _embedder: SentenceTransformer | None = None
@@ -80,9 +81,20 @@ def _ensure_collection(client: QdrantClient) -> None:
         log.info("Collection '%s' created.", _COLLECTION)
 
 
+# ── Startup: pre-load models so first request is instant ─────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    log.info("Startup: connecting to Qdrant and loading embedder …")
+    _get_qdrant()
+    _get_embedder()
+    log.info("mem0 service ready — all components warm.")
+    yield
+
+
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
-app = FastAPI(title="RecursiveMAS Semantic Cache", version="2.0.0")
+app = FastAPI(title="RecursiveMAS Semantic Cache", version="2.1.0", lifespan=lifespan)
 
 
 class SearchRequest(BaseModel):
@@ -103,7 +115,8 @@ class SearchResponse(BaseModel):
 
 
 class StoreRequest(BaseModel):
-    content: str
+    content: str           # full Q&A text stored in payload (for retrieval)
+    query: str = ""        # text to embed for similarity search; falls back to content
     agent_id: str = "recursivemas"
     metadata: dict = {}
 
@@ -154,7 +167,11 @@ def search(req: SearchRequest) -> SearchResponse:
 def store(req: StoreRequest) -> StoreResponse:
     t0 = time.perf_counter()
     try:
-        vector = _get_embedder().encode(req.content).tolist()
+        # Embed the question only (req.query), not the full Q&A string.
+        # This ensures lookup(question) ≈ 1.0 for the same question regardless
+        # of answer length. Falls back to content if query is not provided.
+        embed_text = req.query if req.query.strip() else req.content
+        vector = _get_embedder().encode(embed_text).tolist()
         point = PointStruct(
             id=str(uuid.uuid4()),
             vector=vector,
@@ -166,5 +183,7 @@ def store(req: StoreRequest) -> StoreResponse:
         raise HTTPException(status_code=500, detail=str(exc))
 
     latency_ms = (time.perf_counter() - t0) * 1000
-    log.info("stored  agent_id='%s' (%.1f ms)", req.agent_id, latency_ms)
+    log.info("stored  agent_id='%s'  embed_on='%s…'  (%.1f ms)",
+             req.agent_id, embed_text[:40], latency_ms)
     return StoreResponse(status="ok", latency_ms=latency_ms)
+
