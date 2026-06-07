@@ -122,15 +122,12 @@ def health() -> dict:
 def search(req: SearchRequest) -> SearchResponse:
     t0 = time.perf_counter()
     try:
-        # mem0 v2+ requires agent_id scoping via filters, not as a top-level param
+        # mem0 v2+ scopes via user_id (agent_id as top-level param was removed)
         raw = _get_mem().search(
             req.query,
-            filters={"agent_id": req.agent_id},
+            user_id=req.agent_id,
             limit=req.limit,
         )
-    except TypeError:
-        # Fallback for older mem0 versions that still accept agent_id directly
-        raw = _get_mem().search(req.query, agent_id=req.agent_id, limit=req.limit)
     except Exception as exc:
         log.error("search failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
@@ -157,7 +154,8 @@ def search(req: SearchRequest) -> SearchResponse:
 def store(req: StoreRequest) -> StoreResponse:
     t0 = time.perf_counter()
     try:
-        _get_mem().add(req.content, agent_id=req.agent_id, metadata=req.metadata)
+        # Use user_id for scoping — consistent with search() in mem0 v2+
+        _get_mem().add(req.content, user_id=req.agent_id, metadata=req.metadata)
     except Exception as exc:
         log.error("store failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
