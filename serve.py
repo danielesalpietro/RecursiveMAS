@@ -327,6 +327,9 @@ def _build_reply(
                 f"prompt: {_tok['prompt']:,} · generated: {_tok['generated']:,} · total: {_tok['total']:,}"
                 if _tok else "—"
             )
+            cache_status = "disabled"
+            if run_info.get("use_cache"):
+                cache_status = "HIT ⚡" if run_info.get("cache_hit") else "miss"
             info = (
                 f"| Parameter | Value |\n"
                 f"|-----------|-------|\n"
@@ -334,6 +337,7 @@ def _build_reply(
                 f"| Style | `{run_info['style']}` |\n"
                 f"| LLM backend | `{llm_label}` / `{llm_model}` |\n"
                 f"| Pre-processing | {'✅' if pre_query else '—'} |\n"
+                f"| Semantic cache | {cache_status} |\n"
                 f"| Elapsed (MAS) | {run_info['elapsed']} |\n"
                 f"| Tokens (MAS) | {_tok_str} |"
             )
