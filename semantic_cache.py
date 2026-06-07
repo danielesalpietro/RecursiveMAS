@@ -20,9 +20,11 @@ import requests
 
 log = logging.getLogger(__name__)
 
-_MEM0_URL = os.getenv("MEM0_URL", "http://localhost:8080")
-_THRESHOLD = float(os.getenv("MEM0_THRESHOLD", "0.92"))
-_TIMEOUT = float(os.getenv("MEM0_TIMEOUT_S", "3.0"))
+_MEM0_URL         = os.getenv("MEM0_URL", "http://localhost:8080")
+_THRESHOLD        = float(os.getenv("MEM0_THRESHOLD",        "0.92"))
+_ENRICH_THRESHOLD = float(os.getenv("MEM0_ENRICH_THRESHOLD", "0.75"))
+_ENRICH_LIMIT     = int(os.getenv("MEM0_ENRICH_LIMIT",       "3"))
+_TIMEOUT          = float(os.getenv("MEM0_TIMEOUT_S",         "3.0"))
 
 _Q_PREFIX = "Q: "
 _A_PREFIX = " | A: "
@@ -101,3 +103,48 @@ def store(
         log.info("[cache] stored  style=%s  domain=%s", style, domain)
     except Exception as exc:
         log.warning("[cache] mem0 unreachable, skipping store: %s", exc)
+
+
+def enrich(question: str, style: str, domain: str) -> tuple[str, int]:
+    """Retrieve top-N semantically related Q&A pairs for context injection.
+
+    Returns (context_block, hit_count).  context_block is an empty string when
+    nothing relevant is found or the service is unreachable (fail-open).
+
+    Only meaningful for text-based pipelines (sequential_text) where each agent
+    reads the enriched prompt as plain text.  Threshold MEM0_ENRICH_THRESHOLD
+    (default 0.75) is intentionally lower than the full-HIT threshold so that
+    partial knowledge is surfaced even when an exact answer cannot be reused.
+    """
+    try:
+        resp = requests.post(
+            f"{_MEM0_URL}/search",
+            json={"query": question, "agent_id": _agent_id(style, domain), "limit": _ENRICH_LIMIT},
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+        results = resp.json().get("results", [])
+        relevant = [r for r in results if r["score"] >= _ENRICH_THRESHOLD]
+        if not relevant:
+            log.info("[enrich] no relevant context (style=%s domain=%s)", style, domain)
+            return "", 0
+
+        lines = ["[Prior knowledge from past reasoning sessions — use if relevant]"]
+        for i, r in enumerate(relevant, 1):
+            mem = r["memory"]
+            sep = mem.find(_A_PREFIX)
+            if sep != -1:
+                q_text = mem[len(_Q_PREFIX):sep].strip()
+                a_text = mem[sep + len(_A_PREFIX):].strip()
+                lines.append(f"{i}. Q: {q_text}")
+                lines.append(f"   A: {a_text}")
+            else:
+                lines.append(f"{i}. {mem.strip()}")
+        lines.append("")
+
+        log.info("[enrich] %d context(s) injected (style=%s domain=%s)", len(relevant), style, domain)
+        return "\n".join(lines), len(relevant)
+
+    except Exception as exc:
+        log.warning("[enrich] mem0 unreachable, skipping enrichment: %s", exc)
+        return "", 0

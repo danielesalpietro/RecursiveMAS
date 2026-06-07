@@ -118,14 +118,17 @@ def _run_single_question(
     device_map: Optional[Dict[str, str]] = None,
     model_overrides: Optional[Dict[str, str]] = None,
     use_cache: bool = True,
-) -> Tuple[str, str]:
+    use_enrich: bool = False,
+) -> Tuple[str, str, int]:
     """
     Run the MAS pipeline on one question.
-    Returns (captured_stdout, parsed_answer_string).
+    Returns (captured_stdout, parsed_answer_string, enrich_hits).
 
     PRE:  check mem0 semantic cache — if hit, skip the entire pipeline.
+          For sequential_text with use_enrich=True, inject related past Q&A
+          pairs as context when the score falls below the full-HIT threshold.
     POST: store the result in mem0 for future reuse.
-    Both steps are skipped when use_cache=False.
+    Both cache steps are skipped when use_cache=False.
     """
     import argparse as _ap
 
@@ -134,7 +137,14 @@ def _run_single_question(
         cached = semantic_cache.lookup(question, style, domain)
         if cached is not None:
             stdout = f"[semantic cache HIT — inference skipped]\nAnswer: {cached}\n"
-            return stdout, cached
+            return stdout, cached, 0
+
+    # ── PRE: context enrichment (sequential_text only, on MISS) ──────────────
+    enrich_hits = 0
+    if use_enrich and use_cache and style == "sequential_text":
+        context, enrich_hits = semantic_cache.enrich(question, style, domain)
+        if context:
+            question = f"{context}\nQuestion: {question}"
 
     set_active_domain(domain)
 
@@ -224,9 +234,11 @@ def _run_single_question(
 
         # ── POST: store in semantic cache ─────────────────────────────────────
         if use_cache and parsed:
-            semantic_cache.store(question, parsed, style, domain, inference_ms)
+            # Store using the original question (before enrichment prefix)
+            original_q = question.split("\nQuestion: ", 1)[-1] if enrich_hits else question
+            semantic_cache.store(original_q, parsed, style, domain, inference_ms)
 
-        return stdout, parsed
+        return stdout, parsed, enrich_hits
 
     finally:
         for p in (tmp_json, result_jsonl):
@@ -330,6 +342,8 @@ def _build_reply(
             cache_status = "disabled"
             if run_info.get("use_cache"):
                 cache_status = "HIT ⚡" if run_info.get("cache_hit") else "miss"
+            enrich_hits = run_info.get("enrich_hits", 0)
+            enrich_status = f"{enrich_hits} context(s) injected" if run_info.get("use_enrich") else "—"
             info = (
                 f"| Parameter | Value |\n"
                 f"|-----------|-------|\n"
@@ -338,6 +352,7 @@ def _build_reply(
                 f"| LLM backend | `{llm_label}` / `{llm_model}` |\n"
                 f"| Pre-processing | {'✅' if pre_query else '—'} |\n"
                 f"| Semantic cache | {cache_status} |\n"
+                f"| Enrichment | {enrich_status} |\n"
                 f"| Elapsed (MAS) | {run_info['elapsed']} |\n"
                 f"| Tokens (MAS) | {_tok_str} |"
             )
@@ -374,6 +389,8 @@ def _build_reply(
         cache_status = "disabled"
         if run_info.get("use_cache"):
             cache_status = "HIT ⚡" if run_info.get("cache_hit") else "miss"
+        enrich_hits = run_info.get("enrich_hits", 0)
+        enrich_status = f"{enrich_hits} context(s) injected" if run_info.get("use_enrich") else "—"
         info = (
             f"| Parameter | Value |\n"
             f"|-----------|-------|\n"
@@ -387,6 +404,7 @@ def _build_reply(
             f"| Seed | {run_info['seed']} |\n"
             f"| Device | `{run_info['device']}` |\n"
             f"| Semantic cache | {cache_status} |\n"
+            f"| Enrichment | {enrich_status} |\n"
             f"| Started | {run_info['started']} |\n"
             f"| Finished | {run_info['finished']} |\n"
             f"| Elapsed | {run_info['elapsed']} |\n"
@@ -425,6 +443,7 @@ def respond(
     text_solver_model: str = "",
     text_solver_custom: str = "",
     use_cache: bool = True,
+    use_enrich: bool = False,
 ) -> Tuple[List[Dict], List[Dict], str]:
     llm_model = llm_model_custom.strip() if llm_model == _LLM_CUSTOM_SENTINEL else llm_model
     global _CURRENT_STYLE
@@ -473,12 +492,13 @@ def respond(
 
     try:
         t_start = datetime.now()
-        stdout, parsed = _run_single_question(
+        stdout, parsed, enrich_hits = _run_single_question(
             style, mas_question, device, num_rounds, latent_steps, domain,
             temperature=temperature, top_p=top_p, seed=seed,
             device_map=device_map,
             model_overrides=_text_overrides,
             use_cache=use_cache,
+            use_enrich=use_enrich,
         )
         t_end = datetime.now()
         elapsed = str(t_end - t_start).split(".")[0]
@@ -515,6 +535,8 @@ def respond(
             "llm_model": llm_model or "default",
             "use_cache": use_cache,
             "cache_hit": cache_hit,
+            "use_enrich": use_enrich,
+            "enrich_hits": enrich_hits,
             "started": t_start.strftime("%Y-%m-%d %H:%M:%S"),
             "finished": t_end.strftime("%Y-%m-%d %H:%M:%S"),
             "elapsed": elapsed,
@@ -1780,6 +1802,12 @@ def build_ui() -> gr.Blocks:
                             label="Semantic cache (mem0)",
                             info="Return instantly for semantically identical past questions",
                         )
+                        cache_enrich_chk = gr.Checkbox(
+                            value=False,
+                            label="Cache enrichment (sequential_text)",
+                            info="Inject relevant past Q&A pairs as context before running inference — available only for sequential_text",
+                            visible=False,
+                        )
                         with gr.Accordion("Advanced settings", open=False):
                             temperature_sl = gr.Slider(
                                 0.0, 1.0, value=0.6, step=0.05,
@@ -1924,6 +1952,7 @@ def build_ui() -> gr.Blocks:
                             txt_critic_dd, txt_critic_custom,
                             txt_solver_dd, txt_solver_custom,
                             cache_chk,
+                            cache_enrich_chk,
                         ],
                         outputs=[chatbot, state, msg],
                     )
@@ -1942,11 +1971,16 @@ def build_ui() -> gr.Blocks:
                     inputs=[device_dd, style_dd],
                     outputs=[vram_status_md],
                 )
-                # Show/hide model config accordion for sequential_text
+                # Show/hide model config accordion and enrichment checkbox for sequential_text
                 style_dd.change(
                     lambda s: gr.update(visible=(s == "sequential_text")),
                     inputs=[style_dd],
                     outputs=[txt_model_acc],
+                )
+                style_dd.change(
+                    lambda s: gr.update(visible=(s == "sequential_text")),
+                    inputs=[style_dd],
+                    outputs=[cache_enrich_chk],
                 )
                 # Show/hide custom textboxes
                 def _toggle_custom(v):
