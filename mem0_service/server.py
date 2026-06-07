@@ -43,6 +43,7 @@ _config: dict = {
             "host": _QDRANT_HOST,
             "port": _QDRANT_PORT,
             "collection_name": _COLLECTION,
+            "embedding_model_dims": _EMBED_DIM,  # force correct dims regardless of LLM provider
         },
     },
     "embedder": {
