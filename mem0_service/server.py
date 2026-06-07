@@ -123,15 +123,16 @@ def search(req: SearchRequest) -> SearchResponse:
     t0 = time.perf_counter()
     try:
         vector = _get_embedder().encode(req.query).tolist()
-        hits = _get_qdrant().search(
+        response = _get_qdrant().query_points(
             collection_name=_COLLECTION,
-            query_vector=vector,
+            query=vector,
             query_filter=Filter(
                 must=[FieldCondition(key="agent_id", match=MatchValue(value=req.agent_id))]
             ),
             limit=req.limit,
             with_payload=True,
         )
+        hits = response.points
     except Exception as exc:
         log.error("search failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
