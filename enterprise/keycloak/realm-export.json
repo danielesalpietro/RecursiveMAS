@@ -1,0 +1,142 @@
+{
+  "realm": "enterprise-genai",
+  "displayName": "Enterprise GenAI Platform",
+  "displayNameHtml": "<b>Enterprise</b> GenAI",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "accessTokenLifespan": 3600,
+  "refreshTokenMaxReuse": 0,
+
+  "clients": [
+    {
+      "clientId": "openwebui",
+      "name": "Open WebUI",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "openwebui-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "protocol": "openid-connect",
+      "redirectUris": ["http://localhost:3000/*", "http://openwebui:8080/*"],
+      "webOrigins": ["http://localhost:3000", "http://openwebui:8080"],
+      "defaultClientScopes": ["openid", "email", "profile", "roles"]
+    },
+    {
+      "clientId": "superset",
+      "name": "Apache Superset",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "superset-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "protocol": "openid-connect",
+      "redirectUris": ["http://localhost:8088/*", "http://superset:8088/*"],
+      "webOrigins": ["http://localhost:8088", "http://superset:8088"],
+      "defaultClientScopes": ["openid", "email", "profile", "roles"]
+    },
+    {
+      "clientId": "airflow",
+      "name": "Apache Airflow",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "airflow-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "protocol": "openid-connect",
+      "redirectUris": ["http://localhost:8080/*", "http://airflow-webserver:8080/*"],
+      "webOrigins": ["http://localhost:8080", "http://airflow-webserver:8080"],
+      "defaultClientScopes": ["openid", "email", "profile", "roles"]
+    },
+    {
+      "clientId": "mlflow",
+      "name": "MLflow",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "mlflow-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "protocol": "openid-connect",
+      "redirectUris": ["http://localhost:5000/*", "http://mlflow:5000/*"],
+      "webOrigins": ["http://localhost:5000", "http://mlflow:5000"],
+      "defaultClientScopes": ["openid", "email", "profile", "roles"]
+    }
+  ],
+
+  "roles": {
+    "realm": [
+      {"name": "admin",          "description": "Platform Administrator — full access"},
+      {"name": "data-engineer",  "description": "Data Engineering — Airflow, Spark, MinIO"},
+      {"name": "data-scientist", "description": "Data Science — MLflow, Qdrant, Jupyter"},
+      {"name": "analyst",        "description": "Business Analyst — Superset, Open WebUI (read)"},
+      {"name": "viewer",         "description": "Read-only access to dashboards"}
+    ]
+  },
+
+  "users": [
+    {
+      "username": "admin",
+      "enabled": true,
+      "email": "admin@enterprise.local",
+      "firstName": "Platform",
+      "lastName": "Admin",
+      "credentials": [{"type": "password", "value": "admin123", "temporary": false}],
+      "realmRoles": ["admin", "data-engineer", "data-scientist", "analyst"]
+    },
+    {
+      "username": "engineer",
+      "enabled": true,
+      "email": "engineer@enterprise.local",
+      "firstName": "Data",
+      "lastName": "Engineer",
+      "credentials": [{"type": "password", "value": "engineer123", "temporary": false}],
+      "realmRoles": ["data-engineer"]
+    },
+    {
+      "username": "scientist",
+      "enabled": true,
+      "email": "scientist@enterprise.local",
+      "firstName": "Data",
+      "lastName": "Scientist",
+      "credentials": [{"type": "password", "value": "scientist123", "temporary": false}],
+      "realmRoles": ["data-scientist"]
+    },
+    {
+      "username": "analyst",
+      "enabled": true,
+      "email": "analyst@enterprise.local",
+      "firstName": "Business",
+      "lastName": "Analyst",
+      "credentials": [{"type": "password", "value": "analyst123", "temporary": false}],
+      "realmRoles": ["analyst"]
+    }
+  ],
+
+  "clientScopes": [
+    {
+      "name": "roles",
+      "protocol": "openid-connect",
+      "attributes": {"include.in.token.scope": "true"},
+      "protocolMappers": [
+        {
+          "name": "realm roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ]
+}

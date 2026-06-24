@@ -1,0 +1,30 @@
+api:
+  dashboard: true
+  insecure: true  # dashboard on port 8080 — restrict in production
+
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    network: genai_frontend
+
+log:
+  level: INFO
+
+accessLog:
+  format: json
+
+# Uncomment for Let's Encrypt TLS in production:
+# certificatesResolvers:
+#   letsencrypt:
+#     acme:
+#       email: admin@enterprise.local
+#       storage: /letsencrypt/acme.json
+#       httpChallenge:
+#         entryPoint: web
