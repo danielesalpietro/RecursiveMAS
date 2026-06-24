@@ -222,6 +222,145 @@ docker run --rm -p 7860:7860 `
 
 ---
 
+## 🏭 Enterprise GenAI Platform
+
+> A production-ready, fully dockerized **Cognitive Analytics & AI Platform** built on top of RecursiveMAS — deploy a private enterprise AI stack with a single command.
+
+The platform assembles the RecursiveMAS inference engine with a full data/ML/security ecosystem, giving companies a unified environment where data pipelines, vector search, conversational AI, BI analytics, and SSO work as a single coordinated system.
+
+### Architecture — Five Layers
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  LAYER 5 — SECURITY          Keycloak (SSO/OIDC)  ·  Traefik (reverse proxy)│
+├─────────────────────────────────────────────────────────────────────────────┤
+│  LAYER 4 — FRONT-END         Open WebUI (chat)    ·  Apache Superset (BI)   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  LAYER 3 — AI SERVICES       Ollama (LLM)  ·  RAG API  ·  Mem0 API          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  LAYER 2 — MLOPS             MLflow (tracking)    ·  Qdrant (Vector DB)      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  LAYER 1 — DATA ENGINEERING  Airflow · Spark 3.5 · Livy REST                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  LAYER 0 — INFRASTRUCTURE    PostgreSQL 15  ·  Redis 7  ·  MinIO (S3)        │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+| Component | Role |
+|---|---|
+| **Airflow** | Schedules Spark ETL jobs and Qdrant document-ingestion pipelines |
+| **Spark + Livy** | Processes TB-scale raw data into a curated knowledge base (REST-triggered) |
+| **MLflow** | Tracks embedding models, LLM versions, RAG query metrics — artifacts on MinIO |
+| **Qdrant** | Vector DB — stores embedded enterprise documents for semantic RAG search |
+| **RAG API** | Custom FastAPI service: query → embed → Qdrant search → LLM → answer |
+| **Mem0 API** | Per-user memory (Qdrant for semantic search, Redis for recent-activity timeline) |
+| **Ollama** | Local LLM inference (llama3.2 + nomic-embed-text); GPU optional |
+| **Open WebUI** | Chat interface with Keycloak SSO and Ollama backend |
+| **Superset** | BI dashboards with Text-to-SQL, Keycloak SSO, Redis query cache |
+| **Keycloak** | Single Sign-On — one identity across all services, 5 role levels |
+| **Traefik** | Reverse proxy and TLS termination; dashboard on port 8090 |
+| **PostgreSQL** | Isolated DB+user per component (Airflow / MLflow / Superset / Keycloak) |
+| **MinIO** | S3-compatible object storage for MLflow artifacts and Spark data lake |
+
+### RAG + Mem0 Query Flow
+
+```
+User query (Open WebUI)
+        │
+        ▼
+   RAG API  ──► Mem0 API  ──► retrieve user preferences / context
+        │
+        ▼
+   Qdrant  ──► top-k semantic search over enterprise documents
+        │
+        ▼
+  Augmented prompt (context + user memory + question)
+        │
+        ▼
+  Ollama LLM  ──► personalised, grounded answer
+        │
+        ▼
+  MLflow  ──► log model, top_k, retrieved doc count
+```
+
+### Getting Started
+
+**Prerequisites:** Docker ≥ 24, Docker Compose v2, 8 GB RAM minimum (16 GB recommended for LLM).
+
+```bash
+cd enterprise
+
+# 1. Create .env from template (edit secrets before starting)
+make env
+
+# 2. Start incrementally — or start everything at once
+make core        # Postgres + Redis + MinIO
+make data        # + Airflow + Spark + Livy
+make mlops       # + MLflow + Qdrant
+make ai          # + Ollama + RAG API + Mem0
+make ui          # + Open WebUI + Superset
+make security    # + Keycloak + Traefik
+
+# — or — 
+make all         # all layers in one shot
+
+# 3. Pull LLM models (first time only, several GB)
+make pull-models
+```
+
+### Service URLs
+
+| Service | URL | Default credentials |
+|---|---|---|
+| Open WebUI | http://localhost:3000 | register on first visit |
+| Apache Superset | http://localhost:8088 | admin / admin123 |
+| Apache Airflow | http://localhost:8080 | admin / admin123 |
+| MLflow | http://localhost:5000 | — |
+| Keycloak Admin | http://localhost:8443 | admin / admin123 |
+| MinIO Console | http://localhost:9001 | minioadmin / minioadmin123 |
+| Spark Master UI | http://localhost:8082 | — |
+| Traefik Dashboard | http://localhost:8090 | — |
+| RAG API docs | http://localhost:8000/docs | — |
+| Mem0 API docs | http://localhost:8001/docs | — |
+
+### Keycloak Demo Users
+
+| Username | Password | Roles |
+|---|---|---|
+| admin | admin123 | admin, data-engineer, data-scientist, analyst |
+| engineer | engineer123 | data-engineer |
+| scientist | scientist123 | data-scientist |
+| analyst | analyst123 | analyst |
+
+### Enterprise Platform File Structure
+
+```text
+enterprise/
+├── docker-compose.yml              # full stack, profile-based startup
+├── .env.example                    # all configurable variables
+├── Makefile                        # make core/data/mlops/ai/ui/security/all
+├── postgres/
+│   └── init-multiple-databases.sh  # creates isolated DB+user per component
+├── airflow/
+│   └── dags/
+│       ├── 01_spark_etl.py         # submit Spark ETL job via Livy REST
+│       └── 02_vector_ingestion.py  # ingest documents → RAG API → Qdrant
+├── spark/conf/
+│   └── spark-defaults.conf         # S3A (MinIO) + MLflow + shuffle tuning
+├── superset/
+│   └── superset_config.py          # Keycloak SSO + Redis cache + role mapping
+├── keycloak/
+│   └── realm-export.json           # realm, 4 OAuth2 clients, 5 roles, 4 users
+├── traefik/
+│   └── traefik.yml                 # entrypoints + Docker provider
+└── services/
+    ├── rag-api/                    # FastAPI: Qdrant search → LLM + MLflow trace
+    ├── mem0-api/                   # FastAPI: semantic memory + Redis timeline
+    └── livy/                       # Dockerfile: Livy 0.8 on bitnami/spark:3.5
+```
+
+---
+
 ## 💥 Quick Start
 
 ### 🤖 Load Model Checkpoints
@@ -325,15 +464,25 @@ RecursiveMAS/
 ├── .dockerignore
 ├── assets/
 ├── dataset/
-└── inference_utils/
-    ├── __init__.py
-    ├── answer_utils.py
-    ├── lcb_utils.py
-    ├── reflector_tool_notes.py
-    ├── inference_mas.py
-    ├── inference_mas_mixture.py
-    ├── inference_mas_distill.py
-    └── inference_mas_deliberation.py
+├── inference_utils/
+│   ├── __init__.py
+│   ├── answer_utils.py
+│   ├── lcb_utils.py
+│   ├── reflector_tool_notes.py
+│   ├── inference_mas.py
+│   ├── inference_mas_mixture.py
+│   ├── inference_mas_distill.py
+│   └── inference_mas_deliberation.py
+└── enterprise/                     # ← Enterprise GenAI Platform (see section above)
+    ├── docker-compose.yml
+    ├── Makefile
+    ├── .env.example
+    ├── airflow/dags/
+    ├── spark/conf/
+    ├── superset/
+    ├── keycloak/
+    ├── traefik/
+    └── services/{rag-api,mem0-api,livy}/
 ```
 
 The key components are:
